@@ -1,0 +1,23 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "mustafarslan-skills",
+  "description": "A collection of Claude skills shared by mustafarslan.",
+  "owner": {
+    "name": "mustafarslan",
+    "url": "https://github.com/mustafarslan"
+  },
+  "plugins": [
+    {
+      "name": "skills",
+      "source": "./",
+      "strict": false,
+      "description": "All skills in this repository, bundled as one plugin.",
+      "author": {
+        "name": "mustafarslan"
+      },
+      "homepage": "https://github.com/mustafarslan/skills",
+      "repository": "https://github.com/mustafarslan/skills",
+      "license": "MIT"
+    }
+  ]
+}
