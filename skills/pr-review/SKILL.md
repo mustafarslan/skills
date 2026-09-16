@@ -2,7 +2,7 @@
 name: pr-review
 description: Use when asked to review a PR, check or look over a PR, give a second opinion on someone's changes, or review the current branch before pushing.
 argument-hint: "[PR number or URL, or nothing to review the current branch]"
-allowed-tools: Bash, Read, Grep, Glob, ToolSearch, AskUserQuestion
+allowed-tools: Bash, Read, Grep, Glob, ToolSearch, AskUserQuestion, mcp__linear-server__get_issue
 ---
 
 # PR Review
@@ -154,12 +154,13 @@ Find the issue the PR addresses: a closing keyword in the PR body (`Fixes #123`,
 `Closes #123`), or a tracker key (`PROJ-123`) in the body, title, or branch
 name. Then read it:
 
+- Tracker key (`PROJ-123`) → `ToolSearch("select:mcp__linear-server__get_issue")`,
+  then `get_issue`. For a tracker other than Linear, `ToolSearch` for its MCP
+  server's issue-fetch tool and add that tool to `allowed-tools` in this file's
+  frontmatter.
 - GitHub issue → `gh issue view <number>`.
-- Another tracker → `ToolSearch` for a connected issue-tracker MCP server and
-  fetch the issue with it. Its issue-fetch tool must be allowed: add it to
-  `allowed-tools` in this file's frontmatter (e.g. `mcp__<server>__get_issue`).
-- Neither available → work from `gh pr view $N --json body`, and say so in the
-  report.
+- Tracker not connected → work from `gh pr view $N --json body`, and say so in
+  the report.
 
 **No issue and no stated criteria — ask before spending the run.** When there
 is no linked issue *and* the PR body names no acceptance criteria, what you are
