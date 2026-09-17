@@ -7,6 +7,7 @@ A collection of [Claude skills](https://code.claude.com/docs/en/skills) I use an
 | Skill | Description |
 | --- | --- |
 | [pr-review](skills/pr-review/SKILL.md) | Thorough PR review in an isolated worktree: baseline vs. head test runs, issue-driven acceptance checks, security/edge-case lenses, and a user-approved GitHub review |
+| [pr-feedback](skills/pr-feedback/SKILL.md) | Work the review feedback on your own PR: fetch every thread (including bot findings hidden in collapsed sections), verify each claim before agreeing, fix what survives, and post user-approved replies |
 
 ## Installation
 
