@@ -1,69 +1,50 @@
 # skills
 
-A collection of [Claude skills](https://code.claude.com/docs/en/skills) I use and share.
+[Claude Code skills](https://code.claude.com/docs/en/skills) I use and share.
 
-## Available skills
+## Skills
 
-| Skill | Description |
+| Skill | What it does |
 | --- | --- |
-| [pr-review](skills/pr-review/SKILL.md) | Thorough PR review in an isolated worktree: baseline vs. head test runs, issue-driven acceptance checks, security/edge-case lenses, and a user-approved GitHub review |
-| [pr-feedback](skills/pr-feedback/SKILL.md) | Work the review feedback on your own PR: fetch every thread (including bot findings hidden in collapsed sections), verify each claim before agreeing, fix what survives, and post user-approved replies |
+| [pr-review](skills/pr-review/SKILL.md) | Reviews someone else's PR in an isolated worktree, verifies findings, and posts a review you approve. |
+| [pr-feedback](skills/pr-feedback/SKILL.md) | Works the review comments on your own PR: verifies each claim, fixes what holds up, and posts replies you approve. |
 
-## Installation
+Both need the [GitHub CLI](https://cli.github.com/) (`gh`), authenticated.
 
-### Option 1: Claude Code plugin marketplace
+## Install
 
-This repo is a Claude Code plugin marketplace. In Claude Code, run:
+Plugin marketplace (all skills):
 
 ```
 /plugin marketplace add mustafarslan/skills
 /plugin install skills@mustafarslan-skills
 ```
 
-This installs every skill in the repo as a single plugin. Run
-`/plugin marketplace update mustafarslan-skills` to pull new skills later.
-
-### Option 2: Copy individual skills
-
-Copy any skill directory into your personal or project skills folder:
+Or copy one skill:
 
 ```bash
 git clone https://github.com/mustafarslan/skills.git
-cp -r skills/skills/<skill-name> ~/.claude/skills/        # all projects
-cp -r skills/skills/<skill-name> .claude/skills/          # current project only
+cp -r skills/skills/<skill-name> ~/.claude/skills/   # or .claude/skills/ for one project
 ```
 
-### Option 3: Claude apps
+## Usage
 
-Zip a skill directory and upload it in the Skills section of Claude's settings.
+Invoke with a slash command, or just ask ("review PR 42", "address the comments on my PR") and Claude loads the skill.
 
-## Repository structure
+| Command | Effect |
+| --- | --- |
+| `/pr-review 42` | Review PR #42 (number or URL) |
+| `/pr-review` | Review the current branch against its base |
+| `/pr-feedback 42` | Work the feedback on your PR #42 |
+| `/pr-feedback` | Work the feedback on the current branch's PR |
 
-```
-.
-├── .claude-plugin/
-│   └── marketplace.json     # Plugin marketplace manifest
-├── skills/                  # Published skills (auto-discovered)
-│   └── <skill-name>/
-│       ├── SKILL.md         # Required: frontmatter + instructions
-│       ├── scripts/         # Optional: helper scripts
-│       └── references/      # Optional: docs loaded on demand
-├── templates/
-│   └── skill/SKILL.md       # Starting point for new skills (not installed)
-├── LICENSE
-└── README.md
-```
+Installed as a plugin, the commands are namespaced: `/skills:pr-review`, `/skills:pr-feedback`.
 
 ## Adding a skill
 
-1. Copy the template: `cp -r templates/skill skills/<skill-name>`
-2. Edit `skills/<skill-name>/SKILL.md`:
-   - `name`: lowercase letters, numbers, and hyphens; must match the directory name.
-   - `description`: what the skill does **and when to use it**. Claude uses this to decide when to load the skill.
-3. Add a row to the **Available skills** table above.
-
-Every directory under `skills/` is picked up automatically by the plugin; no
-manifest changes are needed.
+1. `cp -r templates/skill skills/<skill-name>`
+2. Set `name` (must match the directory) and `description` (what it does and when to use it) in `SKILL.md`.
+3. Add a row to the table above.
 
 ## License
 
