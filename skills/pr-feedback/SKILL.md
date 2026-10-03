@@ -1,7 +1,7 @@
 ---
 name: pr-feedback
 description: Use when your own PR has review comments, change requests, CodeRabbit or other bot findings, or reviewer questions waiting on an answer, and you need to work through them and respond.
-argument-hint: "[PR number, or nothing to use the current branch's PR]"
+argument-hint: "[PR number, or nothing to use the current branch's PR] [--auto-triage]"
 allowed-tools: Bash, Read, Grep, Glob, Edit, Write, Agent, Skill, ToolSearch, AskUserQuestion, mcp__linear-server__get_issue
 ---
 
@@ -13,6 +13,8 @@ reviews *someone else's* PR, this one answers *yours*.
 
 **Target:** `$ARGUMENTS` — a PR number. If empty, resolve it from the current
 branch (`gh pr view --json number -q .number`); if there is none, stop.
+An optional `--auto-triage` flag changes only §5; see there. Workflows that want
+fewer questions, such as `/bugfix`, pass it.
 
 **Adapt to the repo.** This skill is a method, not a toolchain. Wherever it
 says "the repo's test command", "the lint command", "the config file", find the
@@ -326,6 +328,27 @@ prompts:
 
 Resolve every **Discuss** item before you fix anything. A Skip is final: don't
 fix it anyway "since it was quick", and don't re-raise it in the reply.
+
+**With `--auto-triage`**, the per-item question is replaced by the §4 verdict's
+recommendation, and the more-than-8 framing question is not asked:
+
+| Verdict | Action, without asking |
+|---|---|
+| Confirmed, Confirmed-partly | Fix |
+| Contradicted, Preference | Skip — the reply carries the evidence or hands the call back |
+
+Still print the table, marking each auto-decided row `auto`. The flag removes
+routine questions, not judgment calls, so three kinds of item are still asked:
+
+- **Unconfirmed** — Fix / Skip / Discuss, with **Discuss** recommended.
+- **Contested** — as below: both sides, with evidence.
+- **Design decisions** — any item, Confirmed included, whose fix meets the design
+  gate below. The design gate outranks the auto mapping.
+
+Ask them in one batch **before** fixing anything, as for any Discuss item. An
+auto-Skip is not final the way a user's Skip is: it appears in the §9 drafts,
+and if the user overturns it there, go back through §6–§8 for that item before
+posting. The §9 posting gate is unchanged.
 
 **Two item types are never a plain Fix option:**
 
