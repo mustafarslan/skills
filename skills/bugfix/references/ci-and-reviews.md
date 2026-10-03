@@ -1,7 +1,8 @@
 # CI and reviews
 
-Read by `bugfix` §7 and §8. §1–§2 cover getting CI to a known state, §3 covers knowing who
-should review, and §4 is the review fallback for when `pr-feedback` is not installed.
+Read by `bugfix` §5, §7 and §8. §1–§2 cover getting CI to a known state, §3 covers knowing who
+should review, §4 is the review fallback for when `pr-feedback` is not installed, and §5 is
+the Codex probe for `--codex`.
 
 Throughout: `N` is the PR number, `DEFAULT` the default branch, and `$WT` the worktree.
 
@@ -218,3 +219,21 @@ whether your answer settles it.
 ```bash
 gh api graphql -f query='mutation($t:ID!){ resolveReviewThread(input:{threadId:$t}){ thread{ isResolved } } }' -f t=<PRRT_…>
 ```
+
+## 5. Codex readiness probe (`--codex`)
+
+Run it as its own Bash call before dispatching. Write it as `if/then/else`: in the
+`A && B || C` form a broken companion makes `jq` swallow node's exit code and print nothing.
+
+```bash
+CODEX_COMPANION=$(ls -d ~/.claude/plugins/cache/openai-codex/codex/*/scripts/codex-companion.mjs 2>/dev/null | sort -V | tail -1)
+if [ -n "$CODEX_COMPANION" ]; then
+  node "$CODEX_COMPANION" setup --json 2>/dev/null | jq -r '.ready // false'
+else
+  echo "no-codex"
+fi
+```
+
+`no-codex` or `false` → skip silently. `true` → run it from `$WT` in the same message as the
+§5 diff-review subagent: `node "$CODEX_COMPANION" adversarial-review --base "origin/$DEFAULT" --wait`,
+re-deriving `CODEX_COMPANION` in that call, since shell state does not persist between calls.

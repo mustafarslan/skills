@@ -18,7 +18,7 @@ Take one tracked bug from "reported" to "PR through CI and review":
 6. Answer the review output (CodeRabbit, Claude, Copilot, or any other review tool), then stop.
 
 **Target:** `$ARGUMENTS`. The first word is the issue: a full key (`PROJ-1234`, `#1234`) or a
-bare number (`1234`). The rest are optional flags: `--codex`, `--agy`, `--boost` (§4).
+bare number (`1234`). The rest are optional flags: `--agy` and `--boost` (§4), `--codex` (§5).
 
 **Adapt to the repo.** This skill is a method, not a toolchain. Wherever it says "the repo's
 test command", "the lint command" or "the config file", find the real one before you need it.
@@ -39,8 +39,7 @@ skip it and say so in the report.
    — opening the PR, pushing CI fixes — proceeds without asking.
 
 **Done** means CI has finished on the PR **and** every review item, from a bot or an agentic
-reviewer, has a verdict and was either fixed or answered. Then stop. Not before, and nothing
-after.
+reviewer, has a verdict and was either fixed or answered. Then stop — not before, nothing after.
 
 Copy this checklist into your first message and tick it as you go:
 
@@ -99,14 +98,15 @@ A missing recipe is not a reason to guess. Building one is the first job of §3.
 
 ```bash
 gh pr list --state all --search "<KEY>" --json number,state,title,headRefName
-git ls-remote --heads origin | grep -i "<KEY>"
+git ls-remote --heads origin | cut -f2 | grep -iw -- "<slug>"
 ```
 
 - **An open PR or a live branch for this issue** → stop-exit: someone may already be on it.
 - **Unless it is this skill's own earlier run**: the branch is checked out in
   `$MAIN/.claude/worktrees/bugfix-<slug>`, and the PR's author is you (`gh api user --jq .login`).
-  Then resume. Reuse the worktree, and pick up at the first unticked checklist step — usually
-  §7 or §8 after an earlier stop-exit.
+  Then resume: reuse the worktree, `git -C "$WT" pull --ff-only` (never rebase), and start where
+  the PR's state says — no PR: §5; CI red or pending: §7, counting earlier attempts toward the
+  cap from `git log`; CI green: §8.
 - **A merged PR** → read it. The bug may be a regression of that fix, which is the strongest
   lead you will get.
 
@@ -226,25 +226,13 @@ prompt is self-contained:
 > Lead with the verdict: **Agree** / **Disagree** / **Partly**. Then at most five findings, one
 > line each. Under 300 words. No preamble, no restatement.
 
-**Flagged reviewers** join in the same message, so they run concurrently. Each one is
-best-effort and never blocks the run:
+**Flagged reviewers** join in the same message, best-effort, never blocking. (`--codex` joins
+at §5 instead: it reviews a diff, and there is none yet.)
 
 | Flag | Runs | When it is missing |
 |---|---|---|
-| `--codex` | The Codex companion, if the `openai-codex` plugin is installed. Probe readiness first, as its own call. | `no-codex` or `false` → skip silently. |
 | `--agy` | `agy-ask "<the same brief>"`, run from `$WT`. | Exit 127 (`AGY_UNAVAILABLE` or command not found) → skip silently. |
 | `--boost` | `agy-ask --boost "<brief>"`. Implies `--agy`, and takes minutes, so run it in the background. | As `--agy`. |
-
-The Codex probe:
-
-```bash
-CODEX_COMPANION=$(ls -d ~/.claude/plugins/cache/openai-codex/codex/*/scripts/codex-companion.mjs 2>/dev/null | sort -V | tail -1)
-if [ -n "$CODEX_COMPANION" ]; then
-  node "$CODEX_COMPANION" setup --json 2>/dev/null | jq -r '.ready // false'
-else
-  echo "no-codex"
-fi
-```
 
 For agy, `AGY_FAILED` (2), `AGY_QUOTA` (3) and `AGY_AUTH` (4) mean carry on without it, but **say
 which one happened** in the report. Never retry them, and never report a failed review as a clean
@@ -277,8 +265,15 @@ the final report use them.
 3. **Revert check.** Un-apply the fix with the test still in the tree, and watch the test fail
    again for the original reason:
 
+   First, as its own Bash call — it must halt, not just warn:
+
    ```bash
-   git -C "$WT" diff --cached --quiet || echo "STOP: staged changes — unstage the test first"
+   git -C "$WT" diff --cached --quiet || { echo "STOP: staged changes — unstage the test first"; exit 1; }
+   ```
+
+   Only when that exits 0:
+
+   ```bash
    git -C "$WT" revert --no-commit HEAD       # also removes files the fix added
    # run the new test → must fail with the SAME signature recorded in §3
    git -C "$WT" revert --abort                # restores the fix; the unstaged test is untouched
@@ -292,8 +287,8 @@ the final report use them.
 5. **The suites CI runs.** Lint, format, type check, and the tests for every area the fix
    touches, through the repo's own entry points. A failure that also happens at
    `origin/<default>` is pre-existing. Note it and move on.
-6. **Commit the test.** Second commit. The fix-then-test pair, plus the quoted revert output, is
-   the evidence the PR carries.
+6. **Commit the test** — stage the test files by name, nothing else. The fix-then-test pair,
+   plus the quoted revert output, is the evidence the PR carries.
 
 ### Existing tests are read-only
 
@@ -318,6 +313,11 @@ criteria. Ask only three things:
 Tell it to report only those, with `file:line`, under 200 words. A reviewer asked for findings
 will invent some, so a style note is out of scope. A real finding goes back through the gate.
 
+With `--codex`, run Codex's adversarial review of the same diff in the same message, if the
+`openai-codex` plugin is ready (probe and command in
+[references/ci-and-reviews.md](references/ci-and-reviews.md) §5). It challenges the approach:
+whether the fix treats the root cause or the symptom. `no-codex` or `false` → skip silently.
+
 ### Red flags — stop and re-read this section
 
 - "The old test was wrong anyway."
@@ -341,7 +341,7 @@ cd "$WT" && git rev-parse --show-toplevel
 Look for a skill or command whose purpose is **opening** a PR — not reviewing one:
 
 ```bash
-grep -liE 'open(ing)? (a )?(pull request|PR)|create(s)? (a )?(pull request|PR)' \
+grep -liE '(open(s|ing)?|creat(e|es|ing)) (a )?(pull request|PR)' \
   "$WT"/.claude/skills/*/SKILL.md "$WT"/.claude/commands/*.md 2>/dev/null
 ```
 

@@ -41,7 +41,7 @@ Invoke with a slash command, or just ask ("review PR 42", "address the comments 
 | `/bugfix 1234` | Fix issue 1234 end to end (the tracker prefix is inferred from the repo's history) |
 | `/bugfix PROJ-1234` | Same, with an explicit key |
 
-`bugfix` only runs when you type the command — it pushes code and opens PRs, so Claude never loads it on its own. Optional flags add second opinions on the root cause and skip silently when the tool isn't installed: `--codex` (needs the `openai-codex` plugin), `--agy` and `--boost` (need an `agy-ask` wrapper for the Antigravity CLI).
+`bugfix` only runs when you type the command — it pushes code and opens PRs, so Claude never loads it on its own. Optional flags add second opinions and skip silently when the tool isn't installed: `--agy` and `--boost` challenge the root cause (they need an `agy-ask` wrapper for the Antigravity CLI), and `--codex` challenges the fix diff (it needs the `openai-codex` plugin).
 
 Installed as a plugin, the commands are namespaced: `/skills:pr-review`, `/skills:pr-feedback`, `/skills:bugfix`.
 
