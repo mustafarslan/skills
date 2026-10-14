@@ -2,6 +2,10 @@
 
 [Claude Code skills](https://code.claude.com/docs/en/skills) I use and share.
 
+> **No longer developed here.** I now use these three skills as stages of a larger plugin of
+> mine, cortex (`review`, `feedback` and `bugfix`), and new work on them happens there. This
+> repository stays as it is and stays installable; it gets no further updates.
+
 ## Skills
 
 | Skill | What it does |
