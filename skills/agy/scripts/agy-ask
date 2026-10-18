@@ -1,0 +1,358 @@
+#!/usr/bin/env bash
+# agy-ask — call the Antigravity CLI (agy) as a read-only second advisor.
+#
+# Writes and deletes are blocked by the PreToolUse gate at
+# ~/.gemini/config/agy-readonly-gate.py; this wrapper strips AGY_ALLOW_WRITE so a
+# shell-level opt-out cannot leak into an advisor call.
+#
+# Usage:
+#   agy-ask [options] "prompt"
+#   agy-ask [options] -f brief.md
+#   cat brief.md | agy-ask [options]
+#
+# Options:
+#   --boost             run /boost — on-demand multi-agent deep reasoning. Slower
+#                       (minutes, several turns); the wrapper waits for the team to
+#                       finish. Off by default; only use it when explicitly asked for.
+#   --allow-write       let agy write files for this call (never implicit)
+#   --allow-delete      additionally let agy delete/move (implies --allow-write)
+#   --model M           default: $AGY_ASK_MODEL, else gemini-4-argon-high (list: agy models)
+#   --effort E          low|medium|high (default: high; with --model and no --effort,
+#                       the level in the model's own name is used)
+#   --timeout D         --print-timeout per turn (default: 600s)
+#   --max-wall S        total wall-clock ceiling in seconds across all turns
+#                       (default: 1800). Past it the call gives up rather than hanging.
+#   --cwd DIR           workspace to run in (default: $PWD)
+#   -f FILE             read the prompt from FILE
+#
+# Exit codes: 0 ok · 2 AGY_FAILED (ran, produced nothing) · 3 AGY_QUOTA (out of
+#             quota/credits) · 4 AGY_AUTH (not signed in) · 64 usage · 127 AGY_UNAVAILABLE
+#
+# Every call leaves one line in ~/.gemini/config/agy-ask.log: when, ok or what failed,
+# model, effort, boost, tokens used, seconds.
+#
+# 3 and 4 are NOT retryable here. agy already retries transient rate limits in-process
+# with the server's own backoff, so anything that reaches this wrapper is post-retry.
+#
+# Runs on macOS, Linux, and Windows under Git Bash (what Claude Code's Bash tool uses there).
+
+set -uo pipefail
+
+MODEL="${AGY_ASK_MODEL:-gemini-4-argon-high}"
+EFFORT="high"
+TIMEOUT="600s"
+BOOST=0
+ALLOW_WRITE=0
+ALLOW_DELETE=0
+WORKDIR="$PWD"
+PROMPT_FILE=""
+PROMPT=""
+MAX_BYTES=500000
+MAX_RESUMES=8
+MAX_WALL=1800
+MODEL_GIVEN=0
+EFFORT_GIVEN=0
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -b|--boost)     BOOST=1; shift ;;
+    --no-boost)     BOOST=0; shift ;;
+    --allow-write)  ALLOW_WRITE=1; shift ;;
+    --allow-delete) ALLOW_WRITE=1; ALLOW_DELETE=1; shift ;;
+    --model)        MODEL="$2"; MODEL_GIVEN=1; shift 2 ;;
+    --effort)       EFFORT="$2"; EFFORT_GIVEN=1; shift 2 ;;
+    --timeout)      TIMEOUT="$2"; shift 2 ;;
+    --max-wall)     MAX_WALL="${2%s}"; shift 2 ;;
+    --cwd)          WORKDIR="$2"; shift 2 ;;
+    -f|--file)      PROMPT_FILE="$2"; shift 2 ;;
+    -h|--help)      sed -n '2,37p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --)             shift; break ;;
+    -*)             printf 'agy-ask: unknown option %s\n' "$1" >&2; exit 64 ;;
+    *)              PROMPT="$1"; shift ;;
+  esac
+done
+
+if ! command -v agy >/dev/null 2>&1; then
+  printf 'AGY_UNAVAILABLE: the agy CLI is not on PATH\n' >&2
+  exit 127
+fi
+
+# agy runs below with every permission auto-approved; the gate is the only thing keeping it
+# read-only, and nothing here can see whether agy actually loads it. install.sh leaves this
+# marker only after a live write was blocked, so without it a read-only call does not run.
+if [ "$ALLOW_WRITE" = "0" ] && [ "${AGY_ASK_INSTALL_CHECK:-}" != "1" ] \
+   && [ ! -f "$HOME/.gemini/config/agy-gate.verified" ]; then
+  printf 'AGY_FAILED: the read-only gate has not been verified on this machine — run skills/agy/scripts/install.sh (without --no-verify)\n' >&2
+  exit 2
+fi
+
+# Git Bash on Windows. The brief goes to agy as one argument, and a Windows command line holds
+# about 32,000 characters in all (macOS takes 1 MB), so the cap drops there; the margin is for
+# the preamble, the other flags, and the escaping of quotes in the brief.
+ON_WINDOWS=0
+case "$(uname -s 2>/dev/null)" in MINGW*|MSYS*|CYGWIN*) ON_WINDOWS=1; MAX_BYTES=24000 ;; esac
+
+if [ -n "$PROMPT_FILE" ]; then
+  PROMPT="$(cat -- "$PROMPT_FILE")"
+elif [ -z "$PROMPT" ] && [ ! -t 0 ]; then
+  PROMPT="$(cat)"
+fi
+
+# NOT ${PROMPT//[[:space:]]/}. On macOS's bash 3.2 that substitution is super-quadratic
+# (~n^2.8) in the NUMBER OF MATCHES, because each replacement rescans the accumulating
+# result. Measured, 10% spaces: 4 KB 3.5s · 8 KB 25s · 16 KB 182s. A 355 KB brief hung
+# for over an hour, before the CLI was ever invoked — which is why no agy process
+# appeared. It is not a multibyte problem: pure ASCII reproduces it, and LC_ALL=C only
+# buys an 11x constant. Whitespace-free input is instant, which is what makes it lurk.
+#
+# And NOT `printf '%s' "$X" | grep -q ...` either: grep -q exits on the first match, so
+# once the payload exceeds the 64 KB pipe buffer printf takes SIGPIPE, and `set -o
+# pipefail` above turns that into a failed pipeline. Measured at 362 KB: rc=141, i.e. a
+# non-empty brief reported as empty. A `case` glob needs no subprocess and is O(n).
+case "$PROMPT" in
+  *[![:space:]]*) ;;
+  *)
+    printf 'agy-ask: no prompt given (pass an argument, -f FILE, or pipe it in)\n' >&2
+    exit 64 ;;
+esac
+
+# Byte count, and `head -c` rather than ${PROMPT:0:N} — the substring expansion is
+# multibyte-aware and walks the string, which is the same trap as the check above.
+PROMPT_BYTES=$(printf '%s' "$PROMPT" | wc -c | tr -d ' ')
+if [ "$PROMPT_BYTES" -gt "$MAX_BYTES" ]; then
+  printf 'agy-ask: the brief is %s bytes; truncated to %s. Put long material in a file under --cwd and name its path instead.\n' \
+    "$PROMPT_BYTES" "$MAX_BYTES" >&2
+  PROMPT="$(printf '%s' "$PROMPT" | head -c "$MAX_BYTES")
+
+[TRUNCATED by agy-ask at ${MAX_BYTES} bytes — the brief was ${PROMPT_BYTES} bytes.]"
+fi
+
+PREAMBLE='You are being consulted as a READ-ONLY ADVISOR inside someone else'"'"'s working tree.
+Your file-write, delete and mutating-shell tools are hard-blocked by a PreToolUse hook; do not
+attempt them and do not work around them. Read whatever you need, then answer. Describe changes
+you would make rather than making them. Be concrete and specific to the code you actually read;
+say plainly when you are unsure rather than guessing.
+
+'
+
+if [ "$ALLOW_WRITE" = "1" ]; then
+  PREAMBLE='You may write files for this request; the user explicitly asked for it.
+
+'
+fi
+
+FULL="${PREAMBLE}${PROMPT}"
+[ "$BOOST" = "1" ] && FULL="/boost ${FULL}"
+
+# --- tripwire snapshot ---------------------------------------------------
+snapshot() {
+  git -C "$WORKDIR" status --porcelain 2>/dev/null
+  printf '@HEAD %s\n' "$(git -C "$WORKDIR" rev-parse HEAD 2>/dev/null)"
+  printf '@STASH %s\n' "$(git -C "$WORKDIR" stash list 2>/dev/null | wc -l | tr -d ' ')"
+}
+BEFORE="$(snapshot)"
+
+# --- run -----------------------------------------------------------------
+# A template with X's: GNU mktemp (Linux, Git Bash) refuses one without them; macOS does not care.
+ERRFILE="$(mktemp "${TMPDIR:-/tmp}/agy-ask-err.XXXXXX")"
+trap 'rm -f "$ERRFILE"' EXIT
+
+RUNNER=(env -u AGY_ALLOW_WRITE -u AGY_ALLOW_DELETE)
+[ "$ALLOW_WRITE" = "1" ]  && RUNNER=(env AGY_ALLOW_WRITE=1)
+[ "$ALLOW_DELETE" = "1" ] && RUNNER=(env AGY_ALLOW_WRITE=1 AGY_ALLOW_DELETE=1)
+
+# Git Bash rewrites any argument that looks like a POSIX path when it starts a Windows program,
+# and `--print=/boost ...` looks like one. Turn that off for the agy call and hand it the
+# workspace as a Windows path instead.
+AGY_DIR="$WORKDIR"
+if [ "$ON_WINDOWS" = "1" ]; then
+  RUNNER+=(MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*')
+  AGY_DIR="$(cygpath -w "$WORKDIR" 2>/dev/null || printf '%s' "$WORKDIR")"
+fi
+
+# agy's print mode can answer with a JSON envelope (status, response, error, conversation_id,
+# usage) instead of bare text. With it a failure is a field, not prose to be guessed at, and a
+# boost team is resumed by the id of ITS conversation rather than "the most recent one" (which
+# is another call's when two consults run at once). Needs jq; without it the wrapper falls
+# back to the text mode it always used.
+FORMAT=(); command -v jq >/dev/null 2>&1 && FORMAT=(--output-format json)
+
+# A model's name carries its level (gemini-4-argon-high, gemini-3.8-flash-low), and agy refuses a name
+# with another --effort ("conflicts with --effort=high"). So when a model is named and no effort is,
+# the name decides and no --effort is passed.
+LEVEL=(--effort "$EFFORT")
+if [ "$MODEL_GIVEN" = "1" ] && [ "$EFFORT_GIVEN" = "0" ]; then LEVEL=(); EFFORT="from the model's name"; fi
+
+run_agy() {  # run_agy <prompt> [--continue | --conversation ID]
+  local prompt="$1"; shift
+  cd "$WORKDIR" && "${RUNNER[@]}" agy \
+    --model "$MODEL" \
+    ${LEVEL[@]+"${LEVEL[@]}"} \
+    --print-timeout "$TIMEOUT" \
+    --add-dir "$AGY_DIR" \
+    --dangerously-skip-permissions \
+    ${FORMAT[@]+"${FORMAT[@]}"} \
+    "$@" \
+    --print="$prompt" 2>"$ERRFILE"
+}
+
+# read_reply <raw stdout> — sets OUT (the answer), STATUS, ERRTEXT, CONV, TOKENS.
+# STATUS is agy's own (SUCCESS, ERROR, ...) or UNPARSED when stdout was not the envelope:
+# then the raw text is the answer and the old prose heuristics apply.
+# jq_field <filter> <json> — one field as text. The `tr` is for a native jq.exe under Git Bash,
+# which ends lines with CRLF: "SUCCESS\r" is not "SUCCESS".
+jq_field() { jq -r "$1" <<< "$2" 2>/dev/null | tr -d '\r'; }
+
+read_reply() {
+  local raw="$1"
+  STATUS=""; ERRTEXT=""; CONV=""; TOKENS=0
+  if [ "${#FORMAT[@]}" -gt 0 ]; then
+    STATUS="$(jq_field 'if type == "object" then (.status // "") else "" end' "$raw")"
+  fi
+  if [ -n "$STATUS" ]; then
+    OUT="$(jq_field '.response // ""' "$raw")"
+    ERRTEXT="$(jq_field '.error // ""' "$raw")"
+    CONV="$(jq_field '.conversation_id // ""' "$raw")"
+    TOKENS="$(jq_field '.usage.total_tokens // 0' "$raw")"
+  else
+    STATUS="UNPARSED"; OUT="$raw"
+  fi
+}
+
+ASK_LOG="$HOME/.gemini/config/agy-ask.log"
+
+# Quota and auth failures arrive as prose, and agy's wording will change. Match a family,
+# never a literal, and log every classification with the text that triggered it so a false
+# positive is one grep away instead of a mystery.
+QUOTA_RE='out of credits|quota (exceeded|exhausted)|resource[ _-]?exhausted|usage limit|rate limit|too many requests|(^|[^0-9])429([^0-9]|$)|weekly limit|resets? (at|in)|upgrade your plan|insufficient credits'
+AUTH_RE='sign ?in|signed out|unauthenticated|not authenticated|invalid credentials|credentials (are )?(missing|expired|invalid)|login required|please log ?in|(^|[^0-9])40[13]([^0-9]|$)'
+
+# classify <stdout> — echoes "quota", "auth", or nothing.
+# Only ever called on a failed-or-suspiciously-short run: a full-length answer that happens
+# to discuss rate limiting is an answer, and agy logging a retried 429 to stderr before
+# succeeding must not be read as a failure.
+classify() {
+  local out="$1" hay
+  # A full-length answer is an answer. agy retries transient rate limits in-process and
+  # logs them to stderr on its way to succeeding; reading that as a failure would throw
+  # away a good review.
+  [ "${#out}" -ge 600 ] && { echo ''; return; }
+  hay="$(cat "$ERRFILE" 2>/dev/null)
+$out"
+  # herestring, not a pipe — grep -q exits early and SIGPIPEs the writer under pipefail
+  if grep -qiE "$QUOTA_RE" <<< "$hay"; then echo quota; return; fi
+  if grep -qiE "$AUTH_RE" <<< "$hay"; then echo auth; return; fi
+  echo ''
+}
+
+# give_up <class> <stdout> — report and exit. Never prints the payload: on these classes it
+# is an error message, and passing it upstream as an answer is the failure being prevented.
+give_up() {
+  local class="$1" out="$2" code label
+  case "$class" in
+    quota) code=3; label='AGY_QUOTA: agy is out of quota or credits — not retryable now' ;;
+    auth)  code=4; label='AGY_AUTH: agy is not signed in — run `agy` and authenticate' ;;
+  esac
+  {
+    printf '%s\n' "$label"
+    printf '  --- what agy said ---\n'
+    sed 's/^/  /' "$ERRFILE" 2>/dev/null
+    case "${out}" in *[![:space:]]*) [ "${#out}" -lt 600 ] && printf '%s\n' "$out" | sed 's/^/  /' ;; esac
+  } >&2
+  {
+    printf '%s\t%s\t%s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$class" \
+      "$(cat "$ERRFILE" 2>/dev/null | tr '\n\t' '  ' | cut -c1-300)"
+  } >> "$ASK_LOG" 2>/dev/null || :
+  exit "$code"
+}
+
+# An interim orchestration note, not an answer: boost delegated and the turn ended
+# while the team was still working.
+is_interim() {
+  [ "${#1}" -lt 1200 ] || return 1
+  grep -qiE 'delegat(e|ed|ing|ion)|dispatch(ed|ing)|hand(ed|ing) off' <<< "$1" || return 1
+  grep -qiE 'will wait|waiting for|awaiting|in progress|subagent|team|once (it|they)|once the|report back|dispatched' <<< "$1" || return 1
+  return 0
+}
+
+# check_reply — after read_reply. Quota and auth leave with their own codes; any other status
+# that is not SUCCESS and brought no answer is AGY_FAILED with what agy said. A SUCCESS is an
+# answer whatever words it contains.
+check_reply() {
+  local class=""
+  if [ "$STATUS" = "UNPARSED" ]; then
+    class="$(classify "$OUT")"
+    [ -n "$class" ] && give_up "$class" "$OUT"
+    return 0
+  fi
+  [ "$STATUS" = "SUCCESS" ] && return 0
+  class="$(classify "$ERRTEXT")"
+  [ -n "$class" ] && give_up "$class" "$ERRTEXT"
+  case "$OUT" in *[![:space:]]*) return 0 ;; esac    # cut short but it said something: the caller gets it
+  {
+    printf 'AGY_FAILED: agy ended with status %s (exit %s)\n' "$STATUS" "$RC"
+    [ -n "$ERRTEXT" ] && printf '  %s\n' "$ERRTEXT"
+    sed 's/^/  /' "$ERRFILE" 2>/dev/null
+    printf '  hint: if this timed out, narrow the brief — name the files instead of asking agy to explore.\n'
+  } >&2
+  printf '%s\t%s\t%s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "failed:$STATUS" "$(printf '%s' "$ERRTEXT" | tr '\n\t' '  ' | cut -c1-300)" >> "$ASK_LOG" 2>/dev/null || :
+  exit 2
+}
+
+SECONDS=0
+TOTAL_TOKENS=0
+RAW="$(run_agy "$FULL")"
+RC=$?
+read_reply "$RAW"
+TOTAL_TOKENS=$((TOTAL_TOKENS + ${TOKENS:-0}))
+check_reply
+
+if [ "$BOOST" = "1" ]; then
+  RESUMES=0
+  while is_interim "$OUT" && [ "$RESUMES" -lt "$MAX_RESUMES" ]; do
+    if [ "$SECONDS" -ge "$MAX_WALL" ]; then
+      printf 'AGY_FAILED: boost exceeded the %ss wall-clock ceiling after %ss and never returned an answer\n' "$MAX_WALL" "$SECONDS" >&2
+      printf '  hint: narrow the brief, or raise it with --max-wall.\n' >&2
+      exit 2
+    fi
+    RESUMES=$((RESUMES + 1))
+    printf 'agy-ask: boost team still working — waiting (resume %s/%s, %ss elapsed of %ss)\n' \
+      "$RESUMES" "$MAX_RESUMES" "$SECONDS" "$MAX_WALL" >&2
+    # This call's own conversation when agy told us its id; "the most recent" otherwise.
+    RESUME=(--continue); [ -n "$CONV" ] && RESUME=(--conversation "$CONV")
+    RAW="$(run_agy 'Are the delegated subagents finished? If yes, give me their complete final findings now as the full answer to my original question. If they are still running, wait for them to finish first, then answer. Do not reply with a status update.' "${RESUME[@]}")"
+    RC=$?
+    KEPT_CONV="$CONV"
+    read_reply "$RAW"
+    [ -z "$CONV" ] && CONV="$KEPT_CONV"
+    TOTAL_TOKENS=$((TOTAL_TOKENS + ${TOKENS:-0}))
+    # Quota can run out mid-team. Without this the loop resumes a dead session
+    # five more times.
+    check_reply
+  done
+  if is_interim "$OUT"; then
+    printf 'agy-ask: boost never returned a final answer after %s resumes (%ss) — reporting its last message\n' "$MAX_RESUMES" "$SECONDS" >&2
+  fi
+fi
+
+AFTER="$(snapshot)"
+if [ "$BEFORE" != "$AFTER" ]; then
+  {
+    printf 'AGY_TREE_MODIFIED: agy changed the working tree at %s\n' "$WORKDIR"
+    diff <(printf '%s\n' "$BEFORE") <(printf '%s\n' "$AFTER") | sed 's/^/  /'
+  } >&2
+fi
+
+case "$OUT" in *[![:space:]]*) ;; *)   # empty-or-blank: see the note at the prompt check
+  printf 'AGY_FAILED: agy produced no output (exit %s)\n' "$RC" >&2
+  sed 's/^/  /' "$ERRFILE" >&2
+  printf '  hint: if this timed out, narrow the brief — name the files instead of asking agy to explore.\n' >&2
+  exit 2 ;;
+esac
+
+# What each consult cost, one line a call: with a metered model this is the number to look at.
+printf '%s\t%s\t%s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "ok" \
+  "model=$MODEL effort=$EFFORT boost=$BOOST tokens=$TOTAL_TOKENS seconds=$SECONDS conversation=${CONV:-}" >> "$ASK_LOG" 2>/dev/null || :
+
+printf '%s\n' "$OUT"
+exit 0
