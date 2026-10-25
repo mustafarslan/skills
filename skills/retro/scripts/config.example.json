@@ -1,0 +1,13 @@
+{
+  "repo": "acme/widgets",
+  "repo_folder": "widgets",
+  "remote_regex": null,
+  "default_checkout": "~/code/widgets",
+  "base_branch": "main",
+  "issue_tracker": "none",
+  "issue_team": "",
+  "issue_prefix": "",
+  "instructions_file": "AGENTS.md",
+  "instructions_cap_bytes": null,
+  "reminder_interval_days": 14
+}
