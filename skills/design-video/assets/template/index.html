@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Reference composition: unlock a bike</title>
+<!--
+  Reference composition (32 s, 1920x1080, dark and light from one timeline).
+  Start a new video with scripts/new-video.mjs <folder>: it copies this file next to motion.js and
+  tokens.css. Keep the structure (title card -> chapters -> end card), replace copy and visuals.
+
+  Contract with scripts/render.mjs:
+    window.__video = { width, height, duration }     total length in seconds
+    window.__frame(t, mode)                          draws the frame at time t (seconds), mode 'dark' | 'light'
+  Every visual state is computed from t. No timers, no CSS animations, no Math.random.
+  Open this file in a browser with ?t=12.5&mode=light to look at a single frame.
+-->
+<link rel="stylesheet" href="../../references/tokens.css">
+<style>
+  /* Theme aliases: one set of names, two mappings. Accent is a fill in both modes. */
+  body[data-mode="dark"]  { --stage: var(--dark-bg); --fg: var(--on-dark-1); --fg2: var(--on-dark-2);
+                            --panel: var(--dark-surface); --hair: var(--dark-raised); --inv-bg: var(--on-dark-1); --inv-fg: var(--dark-bg); }
+  body[data-mode="light"] { --stage: var(--bg); --fg: var(--text-1); --fg2: var(--text-3);
+                            --panel: var(--surface); --hair: var(--rule); --inv-bg: var(--text-1); --inv-fg: var(--bg); }
+  html, body { margin: 0; padding: 0; overflow: hidden; }
+  body { width: 100vw; height: 100vh; position: relative; background: var(--stage); color: var(--fg);
+         font-family: var(--font-sans); line-height: 1.25; }
+  .scene { position: absolute; inset: 0; opacity: 0; }
+  .safe  { position: absolute; inset: var(--v-cell); }               /* the 120 px safe area */
+
+  .kicker   { font-size: var(--v-caption); font-weight: 600; color: var(--fg2); }
+  .headline { font-size: var(--v-title); font-weight: 700; margin: 24px 0; }
+  .body     { font-size: var(--v-body); color: var(--fg2); }
+  .hero     { font-size: var(--v-hero); font-weight: 700; }
+  .bar      { height: 12px; background: var(--accent); width: 0; }   /* the accent moment: a bar that grows */
+  .card     { background: var(--panel); border: 2px solid var(--hair); border-radius: var(--radius); padding: 48px; }
+  .row      { display: flex; justify-content: space-between; align-items: baseline; padding: 20px 0; border-bottom: 2px solid var(--hair); font-size: var(--v-caption); }
+  .row b    { font-size: var(--v-body); font-weight: 600; }
+  .meta     { font-size: var(--v-caption); color: var(--fg2); }
+  .pill     { display: inline-block; font-size: var(--v-caption); font-weight: 600; padding: 12px 28px; border: 2px solid var(--fg); border-radius: var(--radius); }
+  .pill.done { background: var(--inv-bg); color: var(--inv-fg); }
+  .num      { font-size: var(--v-display); font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.1; }
+  .progress { position: absolute; left: var(--v-cell); right: var(--v-cell); bottom: var(--v-cell); display: flex; gap: 24px; }
+  .progress i { flex: 1; height: 8px; background: var(--hair); position: relative; display: block; }
+  .progress i b { position: absolute; inset: 0 auto 0 0; background: var(--fg); width: 0; }
+  .chapter  { display: grid; grid-template-columns: 720px 840px; column-gap: 120px; align-items: center; height: 100%; }
+  .caption  { position: absolute; left: 50%; bottom: 168px; transform: translateX(-50%); text-align: center; white-space: pre;
+              font-size: var(--v-caption); font-weight: 600; background: var(--stage); color: var(--fg);
+              padding: 12px 24px; border: 2px solid var(--hair); display: none; }
+</style>
+</head>
+<body data-mode="dark">
+<script src="../lib/motion.js"></script>
+<script>
+/* ---------- Timeline (seconds) ---------- */
+const TITLE = 4, CHAPTER = 8, END = 4;
+const CHAPTERS = [{ label: 'Scan' }, { label: 'Ride' }, { label: 'Lock' }];
+const END_AT = TITLE + CHAPTERS.length * CHAPTER;
+const DURATION = END_AT + END;
+const DIP = 0.25;   // outgoing fades out over its last 0.25 s, incoming fades in over its first 0.25 s
+
+window.__video = { width: 1920, height: 1080, duration: DURATION };
+
+/* ---------- Script: copy and captions (the storyboard is the single source) ---------- */
+const COPY = {
+  title: 'Unlock a bike in one tap.',
+  subtitle: 'Scan, ride and lock.',
+  chapters: [
+    { head: 'Scan the code, ride away.', body: 'Point the phone at the bike. It unlocks in a second.' },
+    { head: 'Pay only for the minutes.', body: 'The meter runs while you ride and stops when you lock.' },
+    { head: 'Lock it, and you are done.', body: 'The receipt arrives before you reach the kerb.' },
+  ],
+  end: 'Take your first ride today.',
+};
+const CAPTIONS = [   // [from, to, text]  <= 2 lines, <= 42 characters per line, same words as the voice-over
+  [0.3, 3.7, 'Unlock a bike in one tap.'],
+  [4.4, 8.6, 'Scan the code, ride away.'],
+  [12.4, 16.6, 'Pay only for the minutes.'],
+  [20.4, 24.6, 'Lock it, and you are done.'],
+  [28.3, 31.7, 'Take your first ride today.'],
+];
+
+/* ---------- Tiny DOM helper ---------- */
+const h = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+const add = (parent, ...kids) => { kids.forEach((k) => parent.appendChild(k)); return parent; };
+
+/* ---------- Scenes: build once, then update(lt) from local time ---------- */
+function titleScene() {
+  const root = h('div', 'scene'), safe = h('div', 'safe');
+  safe.style.cssText = 'display:flex;flex-direction:column;justify-content:center';
+  const title = h('div', 'hero', COPY.title), bar = h('div', 'bar'), sub = h('div', 'body', COPY.subtitle);
+  bar.style.marginTop = '24px'; sub.style.marginTop = '48px';
+  add(root, add(safe, title, bar, sub));
+  return { at: 0, dur: TITLE, root, update(lt) {
+    M.put(title, M.enter(lt, 0.1)); M.put(sub, M.enter(lt, 0.7));
+    bar.style.width = (M.span(lt, 1.2, 1.6, M.ease.out) * 560) + 'px';        // accent moment (once)
+  } };
+}
+
+function chapterScene(i, Visual) {
+  const root = h('div', 'scene'), safe = h('div', 'safe');
+  const grid = h('div', 'chapter'), left = h('div'), right = h('div');
+  const kicker = h('div', 'kicker', `${i + 1} · ${CHAPTERS[i].label}`);
+  const head = h('div', 'headline', COPY.chapters[i].head), body = h('div', 'body', COPY.chapters[i].body);
+  const vis = Visual();
+  add(root, add(safe, add(grid, add(left, kicker, head, body), add(right, vis.el))));
+  const prog = h('div', 'progress'); const fills = CHAPTERS.map(() => { const s = h('i'), f = h('b'); s.appendChild(f); prog.appendChild(s); return f; });
+  root.appendChild(prog);
+  return { at: TITLE + i * CHAPTER, dur: CHAPTER, root, update(lt) {
+    M.put(kicker, M.enter(lt, 0.3)); M.put(head, M.enter(lt, 0.3 + M.stagger(1))); M.put(body, M.enter(lt, 0.3 + M.stagger(2)));
+    vis.update(lt);
+    fills.forEach((f, k) => { f.style.width = (k < i ? 100 : k === i ? M.clamp01(lt / CHAPTER) * 100 : 0) + '%'; });
+  } };
+}
+
+// Chapter 1: a status flips from Locked to Unlocked in the same spot (one moment, local second 3.0).
+function ScanVisual() {
+  const el = h('div', 'card');
+  const name = h('div', 'row'); name.innerHTML = '<b>Bike 7306</b><span>Harbor Street</span>';
+  const state = h('div'); state.style.cssText = 'margin-top:48px';
+  const pill = h('span', 'pill', 'Locked'), bar = h('div', 'bar'); bar.style.marginTop = '24px';
+  add(el, name, add(state, pill), bar);
+  return { el, update(lt) {
+    M.put(el, M.enter(lt, 0.9));
+    const done = lt >= 3.0; pill.className = 'pill' + (done ? ' done' : ''); pill.textContent = done ? '✓ Unlocked' : 'Locked';
+    bar.style.width = (M.span(lt, 3.0, 3.4, M.ease.out) * 320) + 'px';       // accent moment (once)
+  } };
+}
+// Chapter 2: numbers count up while a bar fills.
+function RideVisual() {
+  const el = h('div', 'card');
+  const a = h('div', 'num'), al = h('div', 'meta', 'minutes'), b = h('div', 'num'), bl = h('div', 'meta', 'kilometres');
+  b.style.marginTop = '32px'; const bar = h('div', 'bar'); bar.style.marginTop = '40px';
+  add(el, a, al, b, bl, bar);
+  return { el, update(lt) {
+    M.put(el, M.enter(lt, 0.9));
+    a.textContent = Math.round(M.counter(lt, 1.8, 5.0, 0, 12)); b.textContent = M.counter(lt, 1.8, 5.0, 0, 3.4).toFixed(1);
+    bar.style.width = (M.span(lt, 1.8, 5.0, M.ease.inOut) * 700) + 'px';     // accent moment (once)
+  } };
+}
+// Chapter 3: receipt rows appear one by one, then the done pill.
+function LockVisual() {
+  const el = h('div', 'card');
+  const rows = [['Start', 'Harbor Street · 08:41'], ['End', 'Market Square · 08:53'], ['Price', '$2.40']].map(([k, v]) => {
+    const r = h('div', 'row'); r.innerHTML = `<span>${k}</span><b>${v}</b>`; return r; });
+  const pill = h('span', 'pill done', '✓ Trip ended'); const wrap = h('div'); wrap.style.marginTop = '48px'; wrap.appendChild(pill);
+  add(el, ...rows, wrap);
+  return { el, update(lt) {
+    M.put(el, M.enter(lt, 0.9));
+    rows.forEach((r, k) => M.put(r, M.enter(lt, 1.8 + M.stagger(k, 0.7))));
+    M.put(wrap, M.enter(lt, 5.0));
+  } };
+}
+
+function endScene() {
+  const root = h('div', 'scene'), safe = h('div', 'safe');
+  safe.style.cssText = 'display:flex;flex-direction:column;justify-content:center';
+  const line = h('div', 'hero', COPY.end);
+  /* Optional: an identity mark, if the owner has one, goes here (end card only, at most 1.5 s of emphasis). */
+  add(root, add(safe, line));
+  return { at: END_AT, dur: END, root, update(lt) { M.put(line, M.enter(lt, 0.3)); } };
+}
+
+const SCENES = [titleScene(), chapterScene(0, ScanVisual), chapterScene(1, RideVisual), chapterScene(2, LockVisual), endScene()];
+SCENES.forEach((s) => document.body.appendChild(s.root));
+const capEl = h('div', 'caption'); document.body.appendChild(capEl);
+
+/* ---------- The frame function ---------- */
+window.__frame = (t, mode) => {
+  document.body.dataset.mode = mode === 'light' ? 'light' : 'dark';
+  SCENES.forEach((s, k) => {
+    const last = k === SCENES.length - 1;
+    const lt = t - s.at, live = lt >= 0 && (lt < s.dur || (last && lt <= s.dur));   // t = duration shows the last frame, not black
+    s.root.style.display = live ? 'block' : 'none';
+    if (!live) return;
+    const fin = k === 0 ? 1 : M.span(lt, 0, DIP, M.ease.out);                       // the video opens straight on the title card, with no fade-in
+    const fout = k === SCENES.length - 1 ? 1 : 1 - M.span(lt, s.dur - DIP, s.dur, M.ease.in);
+    s.root.style.opacity = String(Math.min(fin, fout));
+    s.update(lt);
+  });
+  const cap = CAPTIONS.find(([a, b]) => t >= a && t < b);
+  capEl.style.display = cap ? 'block' : 'none'; if (cap) capEl.textContent = cap[2];
+};
+const q = new URLSearchParams(location.search);
+window.__frame(parseFloat(q.get('t') || '0'), q.get('mode') || 'dark');
+</script>
+</body>
+</html>
