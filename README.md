@@ -19,6 +19,7 @@
 | [design-doc](skills/design-doc/SKILL.md) | My house style for documents (HTML, PDF, Google Docs, Word): achromatic palette with one yellow accent, system fonts, a small component set, checked contrast. |
 | [design-video](skills/design-video/SKILL.md) | The same style for short videos: storyboard, an HTML composition in your project, and a frame-exact renderer to MP4. |
 | [spm](skills/spm/SKILL.md) | Helps a product manager write requirements engineers can build and test (epic, stories, acceptance criteria, worked examples) without saying how to build it. Enforced by a checker, a fail-closed write hook and red-team passes. |
+| [system-design](skills/system-design/SKILL.md) | Designs, reviews and stress-tests systems at a staff-engineer bar: locks requirements and non-goals first, runs the capacity math in a script, defaults to the boring design, pushes back on steers that break a requirement, walks failure cascades, and ends with a trade-off table whose every row says when to change the decision. Modes for real designs (design doc + ADRs), mock interviews (as candidate or interviewer), reviews and deep dives. |
 
 The PR skills and `bugfix` need the [GitHub CLI](https://cli.github.com/) (`gh`), authenticated. `bugfix` reads the issue from whichever tracker is connected to Claude Code (Jira, Linear, and so on), falling back to GitHub Issues.
 
@@ -38,6 +39,8 @@ The git skills (`rebase`, `commit`, `pr-merge`, `pr-upsert`) work in any reposit
 
 `design-video` needs Node 18+ and Chrome; its renderer installs its own pinned packages into `~/.cache/design-video/` on first run. `design-doc` and `design-video` share one `tokens.css`, kept byte-identical in both (`cmp` must print nothing).
 
+`system-design` needs `python3` (3.9+) for its calculator and design checker, and uses the `system-design-reviewer` agent in [agents/](agents); agy, when set up, joins the review as a second voice.
+
 `spm` needs `python3` (3.9+) and its `spm-red-team` agent. The word trigger ("spm" in a prompt) is opt-in, because it is a prompt hook: [skills/spm/references/install.md](skills/spm/references/install.md).
 
 ## Install
@@ -54,7 +57,7 @@ Or copy one skill:
 ```bash
 git clone https://github.com/mustafarslan/skills.git
 cp -r skills/skills/<skill-name> ~/.claude/skills/   # or .claude/skills/ for one project
-cp skills/agents/*.md ~/.claude/agents/              # agents used by cure, pr-upsert and spm
+cp skills/agents/*.md ~/.claude/agents/              # agents used by cure, pr-upsert, spm and system-design
 ```
 
 ## Usage
@@ -80,6 +83,7 @@ Invoke with a slash command, or just ask ("review PR 42", "address the comments 
 | `/pr-upsert` | Take the current branch to a reviewed, green PR |
 | `/design-doc`, `/design-video` | Style a document or make a short video in the house style |
 | `/spm` | Write product requirements for engineering |
+| `/system-design <problem>` | Design a system (`--interview candidate\|interviewer`, `--review <doc>`, `--deep-dive <topic>`, `--html`) |
 
 `bugfix`, `pr-merge` and `pr-upsert` only run when you type the command — they push code, open or merge PRs, so Claude never loads them on its own. Optional flags add second opinions and skip silently when the tool isn't installed: `--agy` and `--boost` challenge the root cause (they need the [agy](skills/agy/SKILL.md) setup above), and `--codex` challenges the fix diff (it needs the `openai-codex` plugin).
 
