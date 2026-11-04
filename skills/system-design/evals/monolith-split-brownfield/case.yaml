@@ -1,0 +1,7 @@
+schema_version: "1.1"
+name: monolith-split-brownfield
+expected_outcome: |
+  Reads the existing doc, questions whether a split is justified, migrates incrementally without
+  dual writes, and gives a rollback path per step.
+context:
+  scaffold_script: place-files.sh

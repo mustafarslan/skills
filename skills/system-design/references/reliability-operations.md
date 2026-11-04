@@ -1,5 +1,7 @@
 # Reliability and operations
 
+Last verified: 2026-11 (re-check numbers and provider limits older than 12 months).
+
 ## Contents
 - [How systems actually fail: cascades](#how-systems-actually-fail-cascades)
 - [Resilience patterns](#resilience-patterns)

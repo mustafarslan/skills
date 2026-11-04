@@ -1,0 +1,7 @@
+schema_version: "1.1"
+name: chat-storage-hot-partition
+expected_outcome: |
+  About 2B messages/day (~23k writes/s average, ~69k at a 3x peak) and ~400 GB/day logical at ~200
+  bytes each, from the calculator; an explicit partition key such as conversation_id plus a time
+  bucket; the 200k-member group identified as a hotspot with a concrete mitigation; ordering
+  scoped per conversation; at least one cascade walked end to end.

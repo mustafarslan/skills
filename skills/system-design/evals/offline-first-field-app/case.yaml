@@ -1,0 +1,5 @@
+schema_version: "1.1"
+name: offline-first-field-app
+expected_outcome: |
+  Local-first storage with a named sync mechanism, an explicit conflict policy, versioned API
+  compatibility, and resumable uploads that do not block text sync.

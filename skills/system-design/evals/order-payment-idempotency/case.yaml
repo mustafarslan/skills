@@ -1,0 +1,5 @@
+schema_version: "1.1"
+name: order-payment-idempotency
+expected_outcome: |
+  Idempotency keys on the charge, an outbox or CDC between order and payment, unknown-outcome
+  handling by reconciliation, at-least-once with idempotent consumers, and an end-to-end check.

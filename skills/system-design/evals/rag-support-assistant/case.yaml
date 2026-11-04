@@ -1,0 +1,5 @@
+schema_version: "1.1"
+name: rag-support-assistant
+expected_outcome: |
+  Calculator-sized vector index, entitlement filtering before generation, an injection defence, an
+  eval set, provider-failure behaviour, and a cost estimate with assumed token counts.

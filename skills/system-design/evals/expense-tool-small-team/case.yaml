@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: expense-tool-small-team
+expected_outcome: |
+  One deployable (a monolith or modular monolith) on one Postgres database with object storage for
+  receipts; no message broker, service mesh, sharding or multi-region; build-or-buy considered for
+  the approval workflow; numeric triggers for when to split or add async work.

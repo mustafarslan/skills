@@ -1,0 +1,74 @@
+[
+  {
+    "query": "our orders table in postgres is ~2TB and reports time out. partition by month or shard by merchant? 40k merchants, a handful are huge",
+    "should_trigger": true
+  },
+  {
+    "query": "prepping for a staff loop next week, run a mock system design interview with me, you're the interviewer, topic: design a ride-sharing dispatch",
+    "should_trigger": true
+  },
+  {
+    "query": "we're 6 engineers, should we split the billing module out of our rails monolith into its own service or not yet?",
+    "should_trigger": true
+  },
+  {
+    "query": "kafka vs sqs for order events, ~3k events/s, we're on aws and nobody here has run kafka",
+    "should_trigger": true
+  },
+  {
+    "query": "can you review docs/design/search-v2.md before the arch review on thursday, poke holes in it",
+    "should_trigger": true
+  },
+  {
+    "query": "how much storage and how many servers for 20M DAU uploading 3 photos a day each",
+    "should_trigger": true
+  },
+  {
+    "query": "design a RAG assistant over our confluence, 400k pages, needs to respect page permissions",
+    "should_trigger": true
+  },
+  {
+    "query": "write an ADR for moving sessions from postgres to redis",
+    "should_trigger": true
+  },
+  {
+    "query": "our app needs to work offline for field technicians and sync later, how should sync and conflicts work",
+    "should_trigger": true
+  },
+  {
+    "query": "what does PACELC stand for, one paragraph",
+    "should_trigger": false
+  },
+  {
+    "query": "make this design doc match our house style, yellow accent and all",
+    "should_trigger": false
+  },
+  {
+    "query": "write the epic and user stories for the new checkout flow so engineering can estimate it",
+    "should_trigger": false
+  },
+  {
+    "query": "review PR 412, it changes the retry logic in the payment client",
+    "should_trigger": false
+  },
+  {
+    "query": "fix the N+1 query in this django view",
+    "should_trigger": false
+  },
+  {
+    "query": "write 5 system design interview questions I can give candidates",
+    "should_trigger": false
+  },
+  {
+    "query": "add an index to speed up this query: SELECT * FROM orders WHERE merchant_id = $1 ORDER BY created_at DESC LIMIT 50",
+    "should_trigger": false
+  },
+  {
+    "query": "draw a quick flowchart of our signup steps for the onboarding doc",
+    "should_trigger": false
+  },
+  {
+    "query": "explain how consistent hashing works with a diagram",
+    "should_trigger": false
+  }
+]

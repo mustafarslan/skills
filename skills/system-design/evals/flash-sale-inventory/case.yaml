@@ -1,0 +1,5 @@
+schema_version: "1.1"
+name: flash-sale-inventory
+expected_outcome: |
+  A deep-dive write-up with an atomic no-oversell mechanism, quantified contention, a stated
+  staleness window for the displayed count, expiring reservations, and admission control.

@@ -1,0 +1,5 @@
+schema_version: "1.1"
+name: queue-choice-deep-dive
+expected_outcome: |
+  One recommendation, the 7-day replay requirement handled explicitly, the team's experience
+  weighed, and a numeric condition that would change the decision, in a short write-up.

@@ -1,0 +1,7 @@
+schema_version: "1.1"
+name: review-seeded-defects
+expected_outcome: |
+  The review finds the six planted defects (dual write, retry amplification, eventual consistency
+  without a window, backups vs RPO, liveness probe on the DB, country shard key) and invents none.
+context:
+  scaffold_script: place-files.sh
