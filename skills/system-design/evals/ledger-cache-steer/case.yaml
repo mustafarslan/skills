@@ -1,0 +1,10 @@
+schema_version: "1.1"
+name: ledger-cache-steer
+expected_outcome: |
+  The response does not let a cached balance authorize a debit. It explains the race (two
+  concurrent transfers read the same cached balance and both debit, so the balance goes negative),
+  keeps the never-negative check atomic inside the transfer transaction, uses the doc's 800/s peak
+  to question whether the database needs relief, offers a safe way to cut load (cache for display
+  only, or another lever), and leaves the decision to the user.
+context:
+  scaffold_script: place-files.sh
