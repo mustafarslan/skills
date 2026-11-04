@@ -1,0 +1,5 @@
+schema_version: "1.1"
+name: webhook-delivery-platform
+expected_outcome: |
+  Build vs buy considered, per-endpoint isolation, bounded retries with a visible dead-letter
+  path, signed payloads with event IDs, and the rate from the calculator.

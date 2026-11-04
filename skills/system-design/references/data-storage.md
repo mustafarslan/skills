@@ -1,5 +1,7 @@
 # Data storage
 
+Last verified: 2026-11 (re-check numbers and provider limits older than 12 months).
+
 ## Contents
 - [Choosing a store by access pattern](#choosing-a-store-by-access-pattern)
 - [Storage engines: B-tree vs LSM](#storage-engines-b-tree-vs-lsm)
@@ -11,6 +13,7 @@
 - [Caching](#caching)
 - [IDs](#ids)
 - [Deploying and operating the database](#deploying-and-operating-the-database)
+- [Traps](#traps)
 
 ## Choosing a store by access pattern
 Write the queries first; pick the store that serves them. Default to a relational database
@@ -129,3 +132,14 @@ unless an access pattern rules it out.
 - Backups with point-in-time recovery, restore tested on a schedule, and restore time measured
   against RTO (bigger nodes take longer to restore).
 - Online schema changes and backfills throttled to protect production traffic.
+
+## Traps
+
+### Background jobs and cache misses need their own load estimate
+**Seen in:** smoke eval `chat-storage-hot-partition`, 2026-11-04 (agy's review of the run's doc)
+**Mistake:** sizing only the request path; a daily tiering scan over billions of partitions, and
+the reads that refill an undersized per-node cache, were never put through the calculator.
+**Instead:** for every background job (tiering, compaction scans, backfills, reindexing) and
+every cache-miss path, estimate rows/s and run it through the calculator like user traffic; give
+scans an index or a work queue instead of a full sweep.
+**Why:** these paths are invisible on a good day and saturate the store on the day they run.

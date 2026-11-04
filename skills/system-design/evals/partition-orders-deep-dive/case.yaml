@@ -1,0 +1,5 @@
+schema_version: "1.1"
+name: partition-orders-deep-dive
+expected_outcome: |
+  A specific strategy and key justified by the numbers, the top-20 merchant skew handled, and a
+  numeric trigger for the next step; only the data-storage reference read.

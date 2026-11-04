@@ -27,7 +27,8 @@ Three to five sentences: the problem, the decision, the main trade-off.
 ### Non-goals
 
 ## Estimation
-Calculator command and the figures that matter; triggers that fired; assumed inputs and the
+Calculator command (with `--out docs/design/<slug>.calc.json`, saved next to this doc) and the
+figures that matter; each input labelled given or assumed; triggers that fired; the
 sensitivity band.
 
 ## Architecture
@@ -51,13 +52,16 @@ Trust boundaries and top threats; tenancy; data lifecycle; observability; rollou
 (the table)
 
 ## Evolution
-10x and 100x, each with its trigger; migration plan if brownfield.
+10x and 100x from the calculator's `--scale 10,100` run (quote what fires at each factor),
+each step with its trigger; migration plan if brownfield.
 
 ## Open questions
 Assumptions that most change the design, and who can answer them.
 
 ## Review log
-Reviewer and agy findings, accepted or rejected, and why.
+Reviewer and agy findings, each accepted or rejected, and why. Say whether agy ran, was
+skipped or failed (with its code). A review done without a subagent is labelled
+"self-review (no independent reviewer available)".
 ```
 
 ## Trade-off table
@@ -73,8 +77,9 @@ section. A trigger far beyond any plausible load is a strawman - pick one you wo
 watch.
 
 ## ADR
-Path: `docs/adr/NNNN-<slug>.md`, next free number. Never edit an accepted ADR's decision; write a
-new one that supersedes it.
+Path: `docs/adr/NNNN-<slug>.md`, next free number. Never edit an accepted ADR; write a new one
+that supersedes it and links to it. The only change allowed in the old ADR is its Status line
+(`superseded by NNNN`).
 
 ```markdown
 # NNNN. <Decision title>

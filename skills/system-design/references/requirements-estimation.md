@@ -1,5 +1,7 @@
 # Requirements and estimation
 
+Last verified: 2026-11 (re-check numbers and provider limits older than 12 months).
+
 ## Contents
 - [Functional requirements and non-goals](#functional-requirements-and-non-goals)
 - [Non-functional requirements](#non-functional-requirements)

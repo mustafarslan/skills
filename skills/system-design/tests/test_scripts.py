@@ -27,6 +27,19 @@ def calc(*argv):
 
 
 class CapacityCalcTests(unittest.TestCase):
+    def test_cache_survives_zero_writes(self):
+        out = calc("--dau", "1e6", "--writes-per-user", "0", "--write-bytes", "100", "--read-bytes", "1000")
+        self.assertIn("cache", out)
+
+    def test_scale_path_shows_what_fires_at_10x_and_100x(self):
+        out = calc("--dau", "1e6", "--reads-per-user", "20", "--writes-per-user", "2", "--scale", "10,100")
+        sp = out["scale_path"]
+        self.assertEqual(out["triggers"], [])                       # today: nothing fires
+        self.assertAlmostEqual(sp["10x"]["headlines"]["traffic.peak_write_qps"],
+                               out["traffic"]["peak_write_qps"] * 10, places=1)
+        self.assertIn("single_node_read_qps", sp["100x"]["triggers"])      # reads, not writes, break first
+        self.assertNotIn("single_primary_write_qps", sp["100x"]["triggers"])
+
     def test_traffic_hand_worked(self):
         out = calc("--dau", "1e8", "--reads-per-user", "20", "--writes-per-user", "2")
         t = out["traffic"]
@@ -125,10 +138,135 @@ class CapacityCalcTests(unittest.TestCase):
         with self.assertRaises(SystemExit), redirect_stdout(io.StringIO()):
             capacity_calc.main(["--dau", "1e6", "--peak-read-qps", "100"])
 
+    # --- C3c-f: restore time, LLM serving, streams, cost (hand-worked) -------------------
+    def test_restore_time_vs_rto(self):
+        out = calc("--data-tib", "10", "--restore-mbps", "500", "--rto-min", "60")
+        # 10 x 1024^4 B / 5e8 B/s / 3600 = 6.108 h
+        self.assertAlmostEqual(out["restore"]["restore_hours"], 6.11, places=2)
+        self.assertIn("restore_exceeds_rto", {t["rule"] for t in out["triggers"]})
+        sharded = calc("--data-tib", "10", "--restore-mbps", "500", "--rto-min", "60", "--shards", "8")
+        self.assertAlmostEqual(sharded["restore"]["restore_hours"], 0.76, places=2)
+        self.assertNotIn("restore_exceeds_rto", {t["rule"] for t in sharded["triggers"]})
+
+    def test_restore_uses_storage_estimate(self):
+        out = calc("--dau", "1e6", "--writes-per-user", "1", "--write-bytes", "1000", "--years", "1",
+                   "--restore-mbps", "100")
+        self.assertAlmostEqual(out["restore"]["data_tib"], out["storage"]["logical_total_tib"], places=3)
+
+    def test_llm_serving_kv_cache_hand_worked(self):
+        out = calc("--llm-rps", "10", "--prompt-tokens", "2000", "--output-tokens", "500",
+                   "--decode-tps", "50", "--layers", "80", "--kv-heads", "8", "--head-dim", "128",
+                   "--context", "8192", "--peak", "1")
+        llm = out["llm"]
+        self.assertEqual(llm["kv_bytes_per_token"], 327680)          # 2 x 80 x 8 x 128 x 2
+        self.assertAlmostEqual(llm["kv_gib_per_sequence"], 2.5, places=3)
+        self.assertAlmostEqual(llm["generation_seconds"], 10.0)        # 500 / 50
+        self.assertAlmostEqual(llm["concurrent_streams_at_peak"], 100.0)  # 10 rps x 10 s
+        self.assertAlmostEqual(llm["kv_gib_at_peak"], 250.0, places=1)
+
+    def test_llm_cost_and_gpu_trigger(self):
+        out = calc("--llm-rps", "10", "--prompt-tokens", "2000", "--output-tokens", "500",
+                   "--price-in", "3", "--price-out", "15", "--decode-tps", "50", "--layers", "80",
+                   "--kv-heads", "8", "--head-dim", "128", "--context", "8192", "--peak", "1",
+                   "--gpu-mem-gib", "80", "--weights-gib", "40", "--gpus", "4")
+        llm = out["llm"]
+        self.assertAlmostEqual(llm["cost_per_request_usd"], 0.0135)     # (2000x3 + 500x15) / 1e6
+        self.assertAlmostEqual(llm["cost_per_day_usd"], 0.0135 * 10 * 86400, places=2)
+        # KV room = 4 x (80 - 40) = 160 GiB < 250 GiB needed
+        self.assertIn("kv_cache_exceeds_gpu", {t["rule"] for t in out["triggers"]})
+
+    def test_streams_partitions(self):
+        out = calc("--events-per-sec", "20000", "--event-bytes", "1000", "--partition-mbps", "10",
+                   "--consumer-ms", "5", "--partitions", "12")
+        st = out["streams"]
+        self.assertEqual(st["partitions_for_throughput"], 2)     # 20 MB/s / 10 MB/s
+        self.assertEqual(st["partitions_for_consumers"], 100)    # 20,000/s x 0.005 s
+        self.assertEqual(st["bound_by"], "consumers")
+        self.assertIn("consumer_lag_risk", {t["rule"] for t in out["triggers"]})
+        ok = calc("--events-per-sec", "20000", "--event-bytes", "1000", "--partition-mbps", "10",
+                  "--consumer-ms", "5", "--partitions", "128")
+        self.assertNotIn("consumer_lag_risk", {t["rule"] for t in ok["triggers"]})
+
+    def test_cost_names_largest_line(self):
+        out = calc("--dau", "1e6", "--reads-per-user", "10", "--writes-per-user", "1",
+                   "--write-bytes", "1000", "--read-bytes", "100000", "--years", "1",
+                   "--price-storage-gb-month", "0.023", "--price-egress-gb", "0.09",
+                   "--price-instance-hour", "0.2", "--instances", "4")
+        cost = out["cost"]
+        self.assertAlmostEqual(cost["storage_month_usd"], 25.19, places=2)   # 1,095 GB x 0.023
+        self.assertAlmostEqual(cost["egress_month_usd"], 2700.0, places=1)   # 30,000 GB x 0.09
+        self.assertAlmostEqual(cost["compute_month_usd"], 584.0, places=1)   # 4 x 0.2 x 730
+        self.assertEqual(cost["largest_line"], "egress")
+
+    def test_cost_has_no_builtin_prices(self):
+        out = calc("--dau", "1e6", "--write-bytes", "1000", "--read-bytes", "1000")
+        self.assertNotIn("cost", out)
+
+    def test_cost_scales(self):
+        out = calc("--dau", "1e6", "--reads-per-user", "10", "--read-bytes", "100000",
+                   "--price-egress-gb", "0.09", "--scale", "10")
+        self.assertAlmostEqual(out["scale_path"]["10x"]["headlines"]["cost.total_month_usd"],
+                               out["cost"]["total_month_usd"] * 10, places=0)
+
+    def test_daily_volumes_without_dau(self):
+        # "100M links a month, reads ~100x writes": no DAU in the brief
+        out = calc("--writes-per-day", str(1e8 / 30), "--reads-per-day", str(1e10 / 30),
+                   "--write-bytes", "500", "--years", "5", "--read-bytes", "500")
+        self.assertAlmostEqual(out["traffic"]["avg_write_qps"], 38.58, places=2)
+        self.assertAlmostEqual(out["traffic"]["avg_read_qps"], 3858.02, places=1)
+        self.assertIn("storage", out)
+        self.assertIn("cache", out)
+        with self.assertRaises(SystemExit), redirect_stdout(io.StringIO()):
+            capacity_calc.main(["--dau", "1e6", "--writes-per-day", "100"])
+
+    def test_out_writes_the_json_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "x.calc.json")
+            printed = calc("--dau", "1e6", "--out", path)
+            with open(path) as fh:
+                self.assertEqual(json.load(fh), printed)
+
+    def test_zero_divisors_are_rejected(self):
+        for argv in (["--data-tib", "1", "--restore-mbps", "0"],
+                     ["--llm-rps", "1", "--decode-tps", "0"],
+                     ["--events-per-sec", "100", "--partition-mbps", "0"],
+                     ["--events-per-sec", "100", "--consumer-ms", "0"],
+                     ["--events-per-sec", "100", "--consumer-ms", "5", "--partitions", "0"],
+                     ["--events-per-sec", "100", "--partition-mbps", "-10"]):
+            with self.subTest(argv=argv), self.assertRaises(SystemExit):
+                with redirect_stdout(io.StringIO()):
+                    capacity_calc.main(argv)
+
+    def test_llm_prices_reach_the_cost_section(self):
+        out = calc("--llm-rps", "10", "--prompt-tokens", "2000", "--output-tokens", "500",
+                   "--price-in", "3", "--price-out", "15")
+        self.assertEqual(out["cost"]["largest_line"], "llm")
+        self.assertAlmostEqual(out["cost"]["llm_month_usd"], out["llm"]["cost_per_month_usd"], places=2)
+
+    def test_scale_grows_compute_with_load(self):
+        out = calc("--dau", "1e6", "--price-instance-hour", "0.2", "--instances", "4", "--scale", "10")
+        self.assertAlmostEqual(out["scale_path"]["10x"]["headlines"]["cost.total_month_usd"],
+                               out["cost"]["total_month_usd"] * 10, places=0)
+
+    def test_new_inputs_can_be_marked_assumed(self):
+        out = calc("--data-tib", "10", "--restore-mbps", "500", "--rto-min", "60",
+                   "--assumed", "restore-mbps,data-tib")
+        self.assertIn("restore.restore_hours", out["sensitivity"]["ranges"])
+
+    def test_thresholds_have_basis_and_verified(self):
+        for name, t in capacity_calc.THRESHOLDS.items():
+            with self.subTest(name=name):
+                self.assertTrue(t.get("basis"))
+                self.assertRegex(t.get("verified", ""), r"^\d{4}-\d{2}$")
+
     def test_errors(self):
         for argv in ([], ["--dau", "-1"], ["--dau", "1e6", "--assumed", "replication"],
                      ["--dau", "1e6", "--band", "2,3"], ["--serial", "1.5x"],
-                     ["--dau", "1e6", "--hot-fraction", "2"], ["--dau", "1e6", "--peak", "0.5"]):
+                     ["--dau", "1e6", "--hot-fraction", "2"], ["--dau", "1e6", "--peak", "0.5"],
+                     ["--dau", "1e6", "--write-bytes", "100", "--replication", "0"],
+                     ["--dau", "1e6", "--write-bytes", "100", "--years", "0"],
+                     ["--dau", "1e6", "--write-bytes", "100", "--yearly-growth", "-1"],
+                     ["--dau", "1e6", "--write-bytes", "100", "--index-overhead", "-0.5"]):
             with self.subTest(argv=argv), self.assertRaises(SystemExit):
                 with redirect_stdout(io.StringIO()):
                     capacity_calc.main(argv)
@@ -155,10 +293,11 @@ A shop.
 - no marketplace sellers in v1
 
 ## Estimation
-Peak writes 1,200/s; 3-year storage 4 TiB.
+From capacity_calc.py (DAU given, peak 3x assumed): peak writes 1,200/s; 3-year storage 4 TiB.
 
 ## Consistency and failure modes
 Cache flush -> DB pool exhaustion -> shed load.
+DR: warm standby, RPO 5 min, RTO 30 min (assumed).
 
 ## Trade-offs
 | Decision | Solves | Worsens | Change it when |
@@ -192,6 +331,121 @@ Change it when: peak writes exceed 8k/s.
 class CheckDesignTests(unittest.TestCase):
     def run_check(self, text, kind="design"):
         return check_design.check(text, kind)[0]
+
+    # --- added by change.md -------------------------------------------------
+    def test_comparison_words_need_word_boundaries(self):
+        text = GOOD.replace("hit ratio < 80%", "we revisit it in Q3 2027 overall")
+        self.assertTrue(any("Redis cache" in p for p in self.run_check(text)))
+
+    def test_trigger_needs_a_unit_not_just_a_digit(self):
+        text = GOOD.replace("hit ratio < 80%", "the team grows beyond 2")
+        self.assertTrue(any("Redis cache" in p for p in self.run_check(text)))
+
+    def test_counted_triggers_from_real_designs_pass(self):
+        # triggers written by the skill in earlier evals: units are nouns or currency
+        for trig in ("more than 5 enterprise tenants ask for Ed25519 signatures",
+                     "more than 2 teams (> 12 engineers) changing checkout weekly",
+                     "monthly LLM spend > $80k for 2 months",
+                     "sync defects exceed 3 per quarter",
+                     "region incidents > 2 per year"):
+            with self.subTest(trig=trig):
+                self.assertEqual(self.run_check(GOOD.replace("hit ratio < 80%", trig)), [])
+
+    # --- agy's review of change.md: false positives the patch introduced ----------------
+    def test_good_design_passes_with_calc(self):
+        # GOOD's "buy rate drops below 50/s" is a scale-down, per-SKU trigger: not a strawman
+        calc_out = {"traffic": {"peak_read_qps": 3000, "peak_write_qps": 1200}}
+        self.assertEqual(check_design.check(GOOD, "design", calc=calc_out)[0], [])
+
+    def test_per_entity_rate_is_not_compared_with_system_peak(self):
+        rows = [(["Endpoint pool", "", "", "one tenant > 300 req/s for 10 min"], 3)]
+        self.assertEqual(check_design.strawman_triggers(rows, {"traffic": {"peak_read_qps": 5000}}), [])
+
+    def test_weekly_and_monthly_rates_are_units(self):
+        for trig in ("price complaints > 5/week", "more than 3 incidents/month"):
+            with self.subTest(trig=trig):
+                self.assertEqual(self.run_check(GOOD.replace("hit ratio < 80%", trig)), [])
+
+    def test_staleness_check_skips_tables_and_review_log(self):
+        text = GOOD.replace("Reviewer: 2 findings accepted.",
+                            "Reviewer: 2 findings accepted; rejected DynamoDB for its eventual consistency.")
+        text = text.replace("| Redis cache | read load | staleness |",
+                            "| Redis cache | read load | eventual consistency on prices |")
+        self.assertEqual(self.run_check(text), [])
+
+    def test_rpo_rto_in_a_table_or_zero(self):
+        text = GOOD.replace("DR: warm standby, RPO 5 min, RTO 30 min (assumed).",
+                            "| Tier | RPO | RTO |\n|---|---|---|\n| ledger | 0 (sync replica) | 15 min |")
+        self.assertEqual(self.run_check(text), [])
+        text = GOOD.replace("RPO 5 min", "RPO: zero (synchronous replica)")
+        self.assertEqual(self.run_check(text), [])
+
+    # --- agy's review of the changes ------------------------------------------------------
+    def test_rpo_rto_before_the_term_and_word_boundaries(self):
+        ok = GOOD.replace("DR: warm standby, RPO 5 min, RTO 30 min (assumed).",
+                          "We target a 5-minute RPO and a 30-minute RTO (assumed).")
+        self.assertEqual(self.run_check(ok), [])
+        bad = GOOD.replace("DR: warm standby, RPO 5 min, RTO 30 min (assumed).",
+                           "For this purpose, 2 replicas. RTO is decided later.")
+        probs = " ".join(self.run_check(bad))
+        self.assertIn("numeric RPO", probs)
+        self.assertIn("numeric RTO", probs)
+
+    def test_strawman_checked_per_clause(self):
+        rows = [(["Postgres", "", "", "peak writes > 900k/s, or replica lag > 2 s"], 3)]
+        found = check_design.strawman_triggers(rows, {"traffic": {"peak_write_qps": 1200}})
+        self.assertTrue(found and "strawman" in found[0])
+
+    def test_mixed_read_write_cell_compares_each_clause(self):
+        rows = [(["Postgres", "", "", "peak writes > 8k/s or peak reads > 60k/s"], 3)]
+        calc_out = {"traffic": {"peak_read_qps": 50000, "peak_write_qps": 1200}}
+        self.assertEqual(check_design.strawman_triggers(rows, calc_out), [])
+
+    def test_events_per_second_is_a_rate_trigger(self):
+        rows = [(["Kafka", "", "", "traffic > 50,000 events/s"], 3)]
+        found = check_design.strawman_triggers(rows, {"traffic": {"peak_write_qps": 100}})
+        self.assertTrue(found and "strawman" in found[0])
+
+    def test_outgrows_is_a_comparison_and_vague_counts_are_not(self):
+        self.assertEqual(self.run_check(GOOD.replace("hit ratio < 80%", "the index outgrows 128 GiB")), [])
+        self.assertTrue(any("Redis cache" in p for p in
+                            self.run_check(GOOD.replace("hit ratio < 80%", "the team grows beyond 2 soon"))))
+
+    def test_adr_trigger_needs_a_counted_number(self):
+        bad = ADR.replace("Change it when: peak writes exceed 8k/s.",
+                          "Change it when: we revisit in 2027 more than once.")
+        self.assertTrue(any("trigger" in p for p in self.run_check(bad, "adr")))
+
+    def test_dates_are_not_trigger_numbers(self):
+        text = GOOD.replace("hit ratio < 80%", "still slow after 2027")
+        self.assertTrue(any("Redis cache" in p for p in self.run_check(text)))
+
+    def test_rate_units_like_per_second_still_pass(self):
+        self.assertEqual(self.run_check(GOOD), [])  # "drops below 50/s" must stay valid
+
+    def test_eventual_consistency_needs_a_window(self):
+        bad = GOOD.replace("A shop.", "Stock counts are eventually consistent.")
+        self.assertTrue(any("staleness window" in p for p in self.run_check(bad)))
+        ok = GOOD.replace("A shop.", "Stock counts are eventually consistent (p99 replica lag 2 s).")
+        self.assertEqual(self.run_check(ok), [])
+
+    def test_failure_section_needs_numeric_rpo_rto(self):
+        text = GOOD.replace("DR: warm standby, RPO 5 min, RTO 30 min (assumed).\n", "")
+        probs = self.run_check(text)
+        self.assertTrue(any("RPO" in p for p in probs) and any("RTO" in p for p in probs))
+
+    def test_strawman_and_already_fired_triggers_with_calc(self):
+        rows = [(["Postgres primary", "", "", "peak writes > 8k/s"], 3)]
+        self.assertEqual(check_design.strawman_triggers(rows, {"traffic": {"peak_write_qps": 1200}}), [])
+        far = check_design.strawman_triggers(rows, {"traffic": {"peak_write_qps": 50}})
+        self.assertTrue(far and "strawman" in far[0])
+        fired = check_design.strawman_triggers(rows, {"traffic": {"peak_write_qps": 20000}})
+        self.assertTrue(fired and "already below" in fired[0])
+
+    def test_write_trigger_compared_with_writes_not_reads(self):
+        rows = [(["Postgres primary", "", "", "peak writes > 8k/s"], 3)]
+        calc_out = {"traffic": {"peak_read_qps": 50000, "peak_write_qps": 1200}}
+        self.assertEqual(check_design.strawman_triggers(rows, calc_out), [])
 
     def test_good_design_passes(self):
         self.assertEqual(self.run_check(GOOD), [])
@@ -237,9 +491,28 @@ class CheckDesignTests(unittest.TestCase):
                             "```sql\nUPDATE t SET x = 1 WHERE <condition>;\n```\n")
         self.assertEqual(self.run_check(text), [])
 
+    def test_estimation_must_label_inputs_and_cite_calculator(self):
+        text = GOOD.replace("From capacity_calc.py (DAU given, peak 3x assumed): ", "")
+        probs = " ".join(self.run_check(text))
+        self.assertIn("given or assumed", probs)
+        self.assertIn("calculator run", probs)
+        ok = GOOD.replace("From capacity_calc.py", "From docs/design/shop.calc.json")
+        self.assertEqual(self.run_check(ok), [])
+
+    def test_empty_solves_or_worsens_fails(self):
+        text = GOOD.replace("| Redis cache | read load | staleness |", "| Redis cache | read load | - |")
+        self.assertTrue(any("'worsens' is empty" in p for p in self.run_check(text)))
+
+    def test_review_log_needs_dispositions(self):
+        text = GOOD.replace("Reviewer: 2 findings accepted.", "Reviewed.")
+        self.assertTrue(any("dispositions" in p for p in self.run_check(text)))
+        self.assertEqual(check_design.check(text, "design", draft=True)[0], [])
+
     def test_subheadings_stay_in_parent_section(self):
-        text = GOOD.replace("## Estimation\nPeak writes 1,200/s; 3-year storage 4 TiB.\n",
-                            "## Estimation\n### Traffic\nPeak writes 1,200/s.\n### Storage\n4 TiB.\n")
+        text = GOOD.replace("## Estimation\nFrom capacity_calc.py (DAU given, peak 3x assumed): "
+                            "peak writes 1,200/s; 3-year storage 4 TiB.\n",
+                            "## Estimation\n### Traffic\ncapacity_calc.py, peak assumed: 1,200/s.\n"
+                            "### Storage\n4 TiB.\n")
         text = text.replace("### Non-functional requirements\n",
                             "### Non-functional requirements\n#### Latency\n")
         self.assertEqual(self.run_check(text), [])

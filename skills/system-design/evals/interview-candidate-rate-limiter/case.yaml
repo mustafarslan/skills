@@ -1,0 +1,5 @@
+schema_version: "1.1"
+name: interview-candidate-rate-limiter
+expected_outcome: |
+  A timed candidate answer with time callouts, order-of-magnitude estimation, no reviewer or agy
+  during the round, a deep dive on cross-node counting and hot keys, and a scored self-review.

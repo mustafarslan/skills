@@ -19,7 +19,7 @@
 | [design-doc](skills/design-doc/SKILL.md) | My house style for documents (HTML, PDF, Google Docs, Word): achromatic palette with one yellow accent, system fonts, a small component set, checked contrast. |
 | [design-video](skills/design-video/SKILL.md) | The same style for short videos: storyboard, an HTML composition in your project, and a frame-exact renderer to MP4. |
 | [spm](skills/spm/SKILL.md) | Helps a product manager write requirements engineers can build and test (epic, stories, acceptance criteria, worked examples) without saying how to build it. Enforced by a checker, a fail-closed write hook and red-team passes. |
-| [system-design](skills/system-design/SKILL.md) | Designs, reviews and stress-tests systems at a staff-engineer bar: locks requirements and non-goals first, runs the capacity math in a script, defaults to the boring design, pushes back on steers that break a requirement, walks failure cascades, and ends with a trade-off table whose every row says when to change the decision. Modes for real designs (design doc + ADRs), mock interviews (as candidate or interviewer), reviews and deep dives. |
+| [system-design](skills/system-design/SKILL.md) | Designs, reviews and stress-tests systems at a staff-engineer bar: locks requirements and non-goals first, runs the capacity math in a script, defaults to the boring design, pushes back on steers that break a requirement, walks failure cascades, and ends with a trade-off table whose every row says when to change the decision. Modes for real designs (design doc + ADRs), mock interviews (as candidate or interviewer), reviews and deep dives. Its calculator also sizes restore time against RTO, LLM serving (tokens, cost, KV cache), stream partitions, cost from your prices, and the 10x/100x path; its gate rejects vague, strawman or already-fired triggers. Ships with a 17-case eval suite. |
 
 The PR skills and `bugfix` need the [GitHub CLI](https://cli.github.com/) (`gh`), authenticated. `bugfix` reads the issue from whichever tracker is connected to Claude Code (Jira, Linear, and so on), falling back to GitHub Issues.
 
@@ -39,7 +39,7 @@ The git skills (`rebase`, `commit`, `pr-merge`, `pr-upsert`) work in any reposit
 
 `design-video` needs Node 18+ and Chrome; its renderer installs its own pinned packages into `~/.cache/design-video/` on first run. `design-doc` and `design-video` share one `tokens.css`, kept byte-identical in both (`cmp` must print nothing).
 
-`system-design` needs `python3` (3.9+) for its calculator and design checker, and uses the `system-design-reviewer` agent in [agents/](agents); agy, when set up, joins the review as a second voice.
+`system-design` needs `python3` (3.9+) for its calculator and design checker, and uses the `system-design-reviewer` agent in [agents/](agents); agy, when set up, joins the review as a second voice. Without subagents it falls back to a labelled self-review, and without a user to answer it writes its questions down as assumptions. Its behavioural evals run with `claude plugin eval` (billed model runs): see [skills/system-design/evals/README.md](skills/system-design/evals/README.md).
 
 `spm` needs `python3` (3.9+) and its `spm-red-team` agent. The word trigger ("spm" in a prompt) is opt-in, because it is a prompt hook: [skills/spm/references/install.md](skills/spm/references/install.md).
 

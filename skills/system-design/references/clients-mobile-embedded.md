@@ -10,6 +10,7 @@
 - [Push and background work](#push-and-background-work)
 - [Embedded and IoT](#embedded-and-iot)
 - [Fleet operations and OTA updates](#fleet-operations-and-ota-updates)
+- [Traps](#traps)
 
 ## What changes when the client is a device
 - The network is slow, lossy and often absent; the device sleeps; battery and data cost money.
@@ -32,11 +33,8 @@
 - Queue local mutations (outbox on the device) with idempotency keys; retry with backoff when
   online.
 - Delta sync: server keeps a change log/version per record; client asks "changes since version
-  N" (with pagination and tombstones for deletes) instead of downloading everything.
-  **Cursor trap:** an auto-increment sequence is assigned at insert, not commit, so a slow
-  transaction can commit a lower number after a client already read past it - that change is
-  skipped forever. Order the feed by commit (e.g. only serve changes below the oldest
-  in-flight transaction, or use a log-based CDC position).
+  N" (with pagination and tombstones for deletes) instead of downloading everything - but see
+  the change-feed cursor trap below.
 - Per-device operation numbering lets the server detect gaps and reject replays; compact
   repeated unsent edits to the same field into one operation before upload.
 - Test the client's local database migrations from every supported app version.
@@ -93,3 +91,14 @@ Choose per data type and say it.
 - Staged rollout by cohort (1% → 10% → 100%) with halt on failure metrics.
 - Delta updates to save bandwidth; resume interrupted downloads.
 - Fleet telemetry: version distribution, crash/reboot rates, connectivity.
+
+## Traps
+
+### Change-feed cursors from an auto-increment sequence skip rows
+**Seen in:** blind-graded eval `d-mobile` (offline field inspection), 2026-11-02 - the
+no-skill design used `bigserial` as the cursor; the grader flagged the silent skip.
+**Mistake:** "changes since sequence N" with N assigned at insert.
+**Instead:** order the feed by commit - serve only changes below the oldest in-flight
+transaction, or use a log-based (CDC) position.
+**Why:** a slow transaction commits a lower number after a client has read past it, and that
+change is never delivered.

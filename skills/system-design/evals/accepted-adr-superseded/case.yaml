@@ -1,0 +1,7 @@
+schema_version: "1.1"
+name: accepted-adr-superseded
+expected_outcome: |
+  ADR 0003's Context, Decision and Consequences are untouched (only its Status line may change); a
+  new ADR records the Redis decision, links 0003, has a numeric trigger and covers Redis failure.
+context:
+  scaffold_script: place-files.sh

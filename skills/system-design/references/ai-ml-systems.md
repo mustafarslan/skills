@@ -1,5 +1,7 @@
 # AI, ML and GenAI systems
 
+Last verified: 2026-11 (re-check numbers and provider limits older than 12 months).
+
 ## Contents
 - [Framing an ML problem](#framing-an-ml-problem)
 - [Data and features](#data-and-features)
@@ -15,6 +17,7 @@
 - [Safety and guardrails](#safety-and-guardrails)
 - [Evaluation](#evaluation)
 - [Cost](#cost)
+- [Traps](#traps)
 
 ## Framing an ML problem
 - Business goal → ML objective → label → metric. ("Reduce churn" → predict 30-day churn → label
@@ -71,9 +74,7 @@
   rank fusion; dense alone misses exact identifiers, SKUs and names.
 - **Permission filtering before ranking/generation**: filter by the user's ACLs in the index
   query, never after generation. Get the ACL semantics right per source:
-  - **intersections** (Confluence page + ancestor restrictions, Jira project scheme ∩ issue
-    security level) cannot be a flat principal list - encode them as synthetic principals or a
-    second filter, or a union leaks;
+  - **intersections** (see the trap below);
   - **deny** entries, and what "unknown ACL" means (fail closed: hide the document);
   - **identity-side revocation** (removed from a group, user disabled) - state how fast it takes
     effect (cache invalidation on directory events) separately from document-side ACL sync;
@@ -128,3 +129,14 @@
 - Cost per request = tokens in × price + tokens out × price (+ retrieval, + reranking); estimate
   per user per month at expected usage.
 - Levers: shorter prompts and contexts, caching, routing, batching, distilled or quantized models.
+
+## Traps
+
+### ACLs that are intersections are not a principal list
+**Seen in:** blind-graded eval `c-rag` (enterprise RAG, 8M documents), 2026-11-02 - the
+skill's design flattened ACLs; the no-skill design did not.
+**Mistake:** storing each document's readers as one flat list of users and groups.
+**Instead:** model sources whose rules combine (Confluence page + ancestor restrictions, Jira
+project scheme ∩ issue security level) as synthetic intersection principals or a second filter,
+and test with a user who satisfies only one side.
+**Why:** a union of the two lists leaks every document guarded by "A and B" to holders of A.
