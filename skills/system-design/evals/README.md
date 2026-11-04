@@ -28,6 +28,10 @@ claude plugin eval . --allow-tools Write Edit Bash Agent --scaffold --no-publish
 - agy cannot run inside an eval (the temporary home has no verified gate), so the skill reports
   `AGY_FAILED` there; that is expected.
 
+**Cases are generated.** `gen_evals.py` holds every prompt, expected outcome, grader and input
+file; edit it, then regenerate (`find evals -mindepth 1 -maxdepth 1 -type d ! -name results
+-exec rm -rf {} +` and `python3 -I evals/gen_evals.py evals`, from `skills/system-design/`).
+
 **Graders.** An `llm` grader with `focus: trace` sees only the first and last 12 messages, so it
 cannot judge a doc written mid-run. Design prompts therefore name the doc path, and graders
 about the doc's content use `focus: { source: file, path: docs/design/<name>.md }`. Process
@@ -46,7 +50,7 @@ every time: LLM judges favour longer answers, and that case rewards restraint.
 | R3 boring by default | over-engineering for small teams and loads | `expense-tool-small-team` | - |
 | R4 trade-off rows with real triggers | vague or strawman "change it when" | `url-shortener-capacity`, `chat-storage-hot-partition` | units, word boundaries, `--calc` strawman / already-fired |
 | R5 make the decision | options without a choice | `queue-choice-deep-dive` | - |
-| R6 push back with numbers | silent compliance with a breaking steer | `ledger-cassandra-steer` | - |
+| R6 push back with numbers | silent compliance with a breaking steer | `ledger-cache-steer`, `ledger-cassandra-steer` | - |
 | R7 say what the user sees | "eventual consistency" with no window | `flash-sale-inventory`, `review-seeded-defects` | staleness window |
 | R8 name what breaks first | good-day-only designs | `chat-storage-hot-partition`, `url-shortener-capacity` | `--scale` path |
 | R9 load references just in time | reading every reference up front | `partition-orders-deep-dive` | - |
@@ -57,7 +61,7 @@ every time: LLM judges favour longer answers, and that case rewards restraint.
 | AI pack | RAG without permissions, sizing or evals | `rag-support-assistant` | - |
 | Client pack | offline sync and version skew ignored | `offline-first-field-app` | - |
 | Brownfield | big-bang rewrites | `monolith-split-brownfield` | - |
-| Review mode | missing real defects, or inventing them | `review-seeded-defects` | - |
+| Review mode | missing real defects, or inventing them | `review-subtle-defects`, `review-seeded-defects` | - |
 | ADR immutability | rewriting an accepted ADR | `accepted-adr-superseded` | - |
 | Interview mode | no time boxes; reviewer mid-round | `interview-candidate-rate-limiter` | - |
 
@@ -67,8 +71,10 @@ model's general knowledge, not this skill.
 ## Smoke and holdout
 
 - **smoke** (5 cases: `url-shortener-capacity`, `expense-tool-small-team`,
-  `chat-storage-hot-partition`, `ledger-cassandra-steer`, `review-seeded-defects`): run on
-  every change.
+  `chat-storage-hot-partition`, `ledger-cache-steer`, `review-subtle-defects`): run on every
+  change. The two subtle cases replaced `ledger-cassandra-steer` and `review-seeded-defects` in
+  the smoke set on 2026-11-04, because the model without the skill already passed those; the
+  originals stay as regression cases.
 - **holdout** (`webhook-delivery-platform`, `offline-first-field-app`,
   `vague-notification-system`, `interview-candidate-rate-limiter`): never edit the skill to make
   one of these pass. Read their failures only to decide whether a general fix is needed, then

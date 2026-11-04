@@ -1,0 +1,9 @@
+schema_version: "1.1"
+name: review-subtle-defects
+expected_outcome: |
+  The review finds the six planted defects - dedup window shorter than the retry window, outbox
+  rows deleted before the publish is acknowledged, read-then-write stock decrement at READ
+  COMMITTED, a breaker fallback that marks orders paid, order pages read from a lagging replica, a
+  DNS TTL longer than the RTO - and invents none.
+context:
+  scaffold_script: place-files.sh
