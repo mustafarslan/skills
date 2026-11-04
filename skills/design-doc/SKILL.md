@@ -99,6 +99,7 @@ Recipes are in `references/html.md`. The vocabulary:
 - Table (header row, zebra, numeric columns right-aligned)
 - Code block (dark surface) and inline code
 - Figure with caption
+- Diagram (architecture, flow, state) as inline SVG: `references/diagrams.md`
 - Step list (numbered, with a short result line per step)
 - Do / Don't pair
 - Key figure (value, unit, label)

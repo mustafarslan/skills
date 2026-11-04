@@ -21,8 +21,10 @@ never in the skill folder. If the project has its own motion or brand guidelines
 before applying this look.
 
 Read, in this order: this file → `references/storyboard.md` before you write the plan →
-`references/moments.md` when you design a chapter's visual → `references/render.md` when you
-build, preview and export.
+`references/moments.md` when you design a chapter's visual → `references/diagrams.md` when a
+chapter shows an architecture, a flow or a state diagram (use its dark variant, and its
+"In a video" sizing) → `references/render.md` when you build, preview and export.
+`references/diagrams.md` is a byte-identical copy of the one in `design-doc`, like the tokens.
 
 ## Workflow
 
