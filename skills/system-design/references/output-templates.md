@@ -122,11 +122,16 @@ flowchart LR
 
 ## HTML+SVG diagram (--html)
 Only when `--html` is given or the user asks for a styled diagram:
-- If the `design-doc` skill is installed, load it and follow its tokens and component rules.
-  Otherwise use a neutral palette, system fonts, and light/dark via `prefers-color-scheme`.
-- One self-contained file next to the design doc (`docs/design/<slug>.html`), inline SVG, no
-  external scripts; boxes for components, cylinders for stores, dashed arrows for async, a legend.
-- The Mermaid diagram in the Markdown stays the source of truth; the HTML is a rendering of it.
+- Draw it with the house diagram recipe, `references/diagrams.md` in the `design-doc` skill
+  (an installed copy sits next to this skill: `${CLAUDE_SKILL_DIR}/../design-doc/references/diagrams.md`;
+  `design-video` carries an identical copy). It gives the palette, the shapes (service,
+  datastore, queue, external system, boundary), sync/async arrows, the one accent-filled focus
+  node, accessibility and a worked example. Load `design-doc` too when the whole doc is styled.
+- If neither skill is installed: greys only, one yellow (`#FFC800`) fill with ink text for the
+  focus node, system fonts, solid arrows for sync and dashed for async, no external resources.
+- One self-contained file next to the design doc (`docs/design/<slug>.html`), inline SVG.
+- The Mermaid diagram in the Markdown stays the source of truth and stays unstyled (fixed colours
+  break GitHub's dark mode); the SVG mirrors it node for node and edge for edge.
 
 ## Review report
 Review mode output:

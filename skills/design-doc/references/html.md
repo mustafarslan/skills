@@ -143,6 +143,7 @@ figcaption { margin-top: var(--s-2); }
 ```
 
 Diagrams use greys; the one step the reader must not miss gets the accent fill with ink text.
+Draw them with `references/diagrams.md` (shapes, palette, a worked example), inline in the page.
 
 ## Step list
 
