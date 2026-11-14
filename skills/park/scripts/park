@@ -1,0 +1,3 @@
+#!/bin/sh
+# park CLI: see park.py for the commands.
+exec python3 "$(dirname "$0")/park.py" "$@"

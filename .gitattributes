@@ -2,3 +2,4 @@
 *.sh               text eol=lf
 *.py               text eol=lf
 skills/agy/scripts/agy-ask text eol=lf
+skills/park/scripts/park text eol=lf
