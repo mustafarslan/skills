@@ -76,6 +76,8 @@ def plan(con, only=(), exclude=(), label=None, self_sid=None, sessions=None, tab
             if watch:   # a joined PR session always gets its pr-pulse inbox watcher back
                 rearm.append({"kind": "monitor", "command": f"{watch} {s['sid']}"})
         long_ = [c["command"] for c in s["commands"] if c["kind"] == "long"]
+        not_restarted = [c["command"] if len(c["command"]) <= 200 else c["command"][:200] + " …"
+                         for c in s["commands"] if c["kind"] in ("oneoff", "partial")]
         row = {"park_id": park_id, "sid": s["sid"], "name": s["name"], "kind": s["kind"], "pid": s["pid"],
                "tty": inventory.tty_of(s["pid"]) if s["kind"] == "interactive" and s["pid"] else "",
                "cwd": s["cwd"], **g, "untracked": json.dumps(g["untracked"]),
@@ -90,6 +92,7 @@ def plan(con, only=(), exclude=(), label=None, self_sid=None, sessions=None, tab
                 "cwd": s["cwd"], "branch": g["branch"], "dirty": g["dirty"], "rearm": len(rearm),
                 "crons": len(json.loads(row["crons"])), "self": s["sid"] == self_sid,
                 "restart": [r["command"] for r in rearm],
+                "not_restarted": not_restarted,
                 "cron_prompts": [c["prompt"] for c in json.loads(row["crons"])],
                 "untracked": len(g["untracked"])}
         if s["skipped_reason"]:
