@@ -1,6 +1,6 @@
 ---
 name: agy
-description: Consult agy (the Antigravity CLI, Gemini) as a read-only second advisor. Use whenever the user says "agy" or "antigravity" — "ask agy", "and also agy", "what does agy think", "get agy's opinion", "/agy" — and wherever a skill calls for an external adversarial reviewer alongside Codex. Pass --boost only when the user says "boost". Not for writing or changing code.
+description: Consult agy (the Antigravity CLI, Gemini) as a read-only second advisor. Use whenever the user says "agy" or "antigravity" — "ask agy", "and also agy", "what does agy think", "get agy's opinion", "/agy" — and wherever a skill calls for an external adversarial reviewer alongside Codex. Plain "agy" runs Gemini 4 Hydrogen High; "agy big" runs Gemini 4 Carbon High (--big). Pass --big only when the user says "big", and --boost only when the user says "boost". Not for writing or changing code.
 ---
 
 # agy — the second advisor
@@ -37,16 +37,31 @@ A brief contains:
 Same discipline as briefing a subagent. If you wouldn't hand the brief to a contractor who
 has never seen the repo, it isn't ready.
 
+## Which model — read this every time you call agy
+
+| The user says | Call | Model |
+| --- | --- | --- |
+| "agy", "ask agy", "antigravity", "/agy" | `agy-ask "<brief>"` | **Gemini 4 Hydrogen High** (`gemini-4-hydrogen-high`) — the default |
+| "agy big", "big agy", "agy with big", `--big` on a skill | `agy-ask --big "<brief>"` | **Gemini 4 Carbon High** (`gemini-4-carbon-high`) |
+
+- **`--big` is opt-in, exactly like boost**: only on the user's own word "big" (or a `--big`
+  flag a calling skill passed through). Never choose it from your own judgement.
+- `--big` and `--boost` are independent and combine: "agy big boost" → `agy-ask --big --boost`.
+- Don't pass `--model` / `--effort` yourself — the tiers live in the wrapper. An explicit
+  `--model` overrides `--big`; the env vars `AGY_ASK_MODEL` / `AGY_ASK_BIG_MODEL` change the two
+  defaults machine-wide.
+- When you report back, name the model that answered ("agy (Hydrogen High) says…").
+
 ## Calling it
 
 ```bash
-agy-ask "<brief>"                     # normal: gemini-4-argon-high, effort high
+agy-ask "<brief>"                     # normal: gemini-4-hydrogen-high
+agy-ask --big "<brief>"               # only when the user said "big": gemini-4-carbon-high
 agy-ask --boost "<brief>"             # only when the user asked for boost
 agy-ask -f /path/to/brief.md          # long briefs: write the file, pass the path
 ```
 
-Run it from the repo root (or pass `--cwd`) so agy can read the real tree. Defaults live in
-the wrapper — don't re-specify `--model` / `--effort` unless you have a reason.
+Run it from the repo root (or pass `--cwd`) so agy can read the real tree.
 
 On Windows the brief is capped at about 24 KB (the command-line limit), and the wrapper says
 so on stderr when it truncates. Keep big material — a long diff, a log — in a file inside
@@ -75,12 +90,13 @@ files and tell me X" comes back in under a minute; "investigate this repository 
 drift" burns the full budget and can return nothing. If you need breadth, do the sweep
 yourself with a subagent and hand agy the findings.
 
-**Timing** (Gemini 4 Argon High, measured 2026-10-13): ~7s trivial, ~45s for a scoped repo
+**Timing** (measured on Gemini 4 Argon High, 2026-10-13; a trivial call on Hydrogen High was ~6s
+and on Carbon High ~11s, 2026-11-14): ~7s trivial, ~45s for a scoped repo
 question; with `--boost` under a minute when it works alone and 10-15 minutes when it hands the
 task to its team. Budget for it; don't poll.
 
 **What a call cost** is in `~/.gemini/config/agy-ask.log`, one line a call: model, effort, boost,
-tokens, seconds. A trivial call is about 18,000 tokens (the workspace context); a boost team run
+big, tokens, seconds. A trivial call is about 18,000 tokens (the workspace context); a boost team run
 was about 150,000.
 
 ## The three shapes
