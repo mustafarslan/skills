@@ -1,7 +1,7 @@
 ---
 name: bugfix
 description: Use when a tracker issue (Jira, Linear, GitHub Issues, or similar) describes a bug to fix and ship as a PR — invoked as /bugfix 1234 or /bugfix PROJ-1234.
-argument-hint: "<issue key or number> [--codex] [--agy] [--boost]"
+argument-hint: "<issue key or number> [--codex] [--agy] [--big] [--boost]"
 disable-model-invocation: true
 allowed-tools: Bash, Read, Grep, Glob, Edit, Write, Agent, Skill, ToolSearch, AskUserQuestion
 ---
@@ -18,7 +18,7 @@ Take one tracked bug from "reported" to "PR through CI and review":
 6. Answer the review output (CodeRabbit, Claude, Copilot, or any other review tool), then stop.
 
 **Target:** `$ARGUMENTS`. The first word is the issue: a full key (`PROJ-1234`, `#1234`) or a
-bare number (`1234`). The rest are optional flags: `--agy` and `--boost` (§4), `--codex` (§5).
+bare number (`1234`). The rest are optional flags: `--agy`, `--big` and `--boost` (§4), `--codex` (§5).
 
 **Adapt to the repo.** This skill is a method, not a toolchain. Wherever it says "the repo's
 test command", "the lint command" or "the config file", find the real one before you need it.
@@ -232,7 +232,8 @@ at §5 instead: it reviews a diff, and there is none yet.)
 | Flag | Runs | When it is missing |
 |---|---|---|
 | `--agy` | `agy-ask "<the same brief>"`, run from `$WT`. | Exit 127 (`AGY_UNAVAILABLE` or command not found) → skip silently. |
-| `--boost` | `agy-ask --boost "<brief>"`. Implies `--agy`, and takes minutes, so run it in the background. | As `--agy`. |
+| `--big` | `agy-ask --big "<brief>"` — Gemini 4 Carbon High instead of the default Hydrogen High. Implies `--agy`. | As `--agy`. |
+| `--boost` | `agy-ask --boost "<brief>"`. Implies `--agy`, and takes minutes, so run it in the background. With `--big` too: `agy-ask --big --boost "<brief>"`. | As `--agy`. |
 
 For agy, `AGY_FAILED` (2), `AGY_QUOTA` (3) and `AGY_AUTH` (4) mean carry on without it, but **say
 which one happened** in the report. Never retry them, and never report a failed review as a clean

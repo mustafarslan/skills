@@ -175,7 +175,8 @@ Never skip or defer this phase in those modes. Dispatch the reviewer and, when a
   frame, the doc path, and "challenge the approach: the 3 most likely ways this design fails in
   production, and any trade-off trigger that does not match the estimation; under 400 words".
   Run `agy-ask --cwd <repo root> -f <brief>` exactly - no `--model`/`--effort` (the wrapper's
-  defaults are right) and **no `--boost`** unless the user said "boost".
+  defaults are right), **no `--big`** unless the user said "big" (it switches to Gemini 4 Carbon
+  High) and **no `--boost`** unless the user said "boost".
   - `AGY_UNAVAILABLE` (exit 127): skip silently; never suggest installing it.
   - `AGY_FAILED` (2), `AGY_QUOTA` (3), `AGY_AUTH` (4): carry on without it and **say which**.
     Never retry quota or auth failures. Never present a failed review as a clean one.

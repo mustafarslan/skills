@@ -7,7 +7,7 @@ Up to three outside voices can check a run. They are **critics of the plan and a
 | `cure-reviewer` agent | Cowork and Claude Code (the plugin ships it) | Full depth: after scoping (sizing only) and before publishing (both flows) | Sonnet 5.5, high effort (from the agent file) |
 | `cure-buyer-skeptic` agent | Cowork and Claude Code | Full depth, before publishing, in parallel with the reviewer and blind to it | Fable 5.1, high effort; reads the ledger and draft only, never searches |
 | `advisor` tool (optional) | Claude Code only, when the tool is listed | Called by the Opus orchestrator only, after scoping and before publishing; subagents never call it | Set by the user, not by this plugin: `advisorModel: "fable"` makes it Fable 5.1 |
-| agy (optional) | Only in Claude Code where an `agy` skill is listed, **and** only when the operator said "agy" (intake question 7) | After scoping, as a critic of `roster.md` or `entity.md` plus the research plan | Gemini Flash by default; `--big` and `--boost` only on the operator's own words |
+| agy (optional) | Only in Claude Code where an `agy` skill is listed, **and** only when the operator said "agy" (intake question 7) | After scoping, as a critic of `roster.md` or `entity.md` plus the research plan | Gemini 4 Hydrogen High by default, Carbon High with `--big`; `--big` and `--boost` only on the operator's own words |
 
 ## Using agy
 
