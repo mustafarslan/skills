@@ -2,18 +2,62 @@
 import json
 import os
 import re
+import shlex
 import sqlite3
 import subprocess
 from pathlib import Path
 
-# The Bash and Monitor tools wrap every command as: zsh -c source <snapshot> ... && eval '<command>' ...
-EVAL_RE = re.compile(r"\beval '((?:[^']|'\\'')*)'")
+# The Bash and Monitor tools wrap every command as:
+#   zsh -c source <snapshot> ... && eval '<command>' < /dev/null && pwd -P >| <file>
+# inside which a quote is written '"'"' and ps shows a newline as \012.
+EVAL_AT = re.compile(r"&& eval (?=')")
 WRAPPER_MARK = "/shell-snapshots/snapshot-"
 # Helpers a watcher runs between checks: not worth re-arming on their own.
 NOISE = re.compile(r"^(sleep|ps|caffeinate|cat|tail|head|grep|jq|sqlite3|git|gh|curl|osascript|date)\b")
-# Long jobs that parking would cut off (warned about, never re-run on their own).
-LONG_RUNNING = re.compile(r"\b(pytest|npm (run )?test|npm run build|turbo|jest|vitest|cargo (build|test)|"
-                          r"go test|mvn|gradle|docker (build|compose up)|make\b|alembic upgrade)")
+# Jobs that parking would cut off and that must never start again by themselves: tests, builds,
+# shipping and deploys. Warned about at park, mentioned on resume, never re-run.
+LONG_RUNNING = re.compile(
+    r"\b(pytest|npm (run )?test|npm run build|turbo|jest|vitest|cargo (build|test)|go test|mvn|gradle|"
+    r"docker (build|compose up)|make\b|alembic upgrade|xcodebuild|swift (build|test)|test\.sh|run-?tests?\b|"
+    r"tools/test|ship|deploy|release|publish|git push|gh pr (create|merge)|terraform (apply|destroy)|kubectl apply)")
+# Work that keeps running until stopped, and is worth starting again on resume.
+LOOP = re.compile(r"(^|[;&|(]\s*)while\s+(true|:|sleep)\b|\btail -[fF]\b|\b(inbox-watch|pr-watch|fswatch|watchexec)\b|"
+                  r"(^|[;&|]\s*)watch\s")
+SERVER = re.compile(r"\b(npm|pnpm|yarn|bun) (run )?(dev|start|serve)\b|\bvite\b|\bnext (dev|start)\b|\buvicorn\b|"
+                    r"\bgunicorn\b|\bflask run\b|\brails s(erver)?\b|\bhttp\.server\b|\bwebpack serve\b|\bstorybook\b")
+
+
+def eval_command(cmd):
+    """The command a Bash/Monitor wrapper runs, exactly as typed, or None when it can't be recovered whole.
+    It counts as whole only when the wrapper's own trailer follows it (`< /dev/null && pwd -P`, or just
+    `&& pwd -P` for a command that reads stdin, such as a heredoc): anything else means the process line
+    was cut short, and a fragment must never be started again."""
+    m = EVAL_AT.search(cmd)
+    if not m:
+        return None
+    try:
+        lex = shlex.shlex(cmd[m.end():], posix=True)
+        lex.whitespace_split = True
+        first, after, then = lex.get_token(), lex.get_token(), lex.get_token()
+    except ValueError:
+        return None
+    if not first or not (after == "<" or (after == "&&" and then == "pwd")):
+        return None
+    return first.replace("\\012", "\n").replace("\\011", "\t")
+
+
+def classify(real):
+    """long: warn, never restart. monitor/shell: restart on resume. oneoff: it ends by itself (a wait
+    loop, an inline script, an ordinary command); listed, not restarted."""
+    if LONG_RUNNING.search(real):
+        return "long"
+    if "\n" in real or "<<" in real:
+        return "oneoff"            # an inline script ran once; re-running it is never what was meant
+    if LOOP.search(real):
+        return "monitor"
+    if SERVER.search(real):
+        return "shell"
+    return "oneoff"
 
 
 def run(args, cwd=None, timeout=30):
@@ -35,9 +79,9 @@ def claude_sessions():
 
 
 def process_table():
-    """{pid: (ppid, command)} for every process."""
+    """{pid: (ppid, command)} for every process, with full command lines (-ww: never cut to a width)."""
     table = {}
-    for line in (run(["ps", "-axo", "pid=,ppid=,command="]) or "").splitlines():
+    for line in (run(["ps", "-wwaxo", "pid=,ppid=,command="]) or "").splitlines():
         parts = line.strip().split(None, 2)
         if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
             table[int(parts[0])] = (int(parts[1]), parts[2] if len(parts) > 2 else "")
@@ -71,28 +115,28 @@ def ancestors(table, pid):
 
 def tool_commands(table, pid, me=None):
     """The commands this session's Bash/Monitor tools are running right now, as typed.
-    Returns [{kind: monitor|shell|long, command}] (kind monitor: a watcher that loops).
-    The command running park itself (this process and its parents) is never one of them."""
+    Returns [{kind: monitor|shell|long|oneoff|partial, command}] (see classify; partial: the start of a
+    command that could not be read whole, never restarted). The command running park itself (this
+    process and its parents) is never one of them."""
     items, seen = [], set()
     mine = ancestors(table, os.getpid() if me is None else me)
     for p in descendants(table, pid):
         cmd = table[p][1]
         if WRAPPER_MARK not in cmd or p in mine:
             continue
-        m = EVAL_RE.search(cmd)
-        if not m:
+        real = eval_command(cmd)
+        if real is None:
+            m = EVAL_AT.search(cmd)
+            frag = cmd[m.end():][:120] if m else ""
+            if frag and frag not in seen:
+                seen.add(frag)
+                items.append({"kind": "partial", "command": frag + " …"})
             continue
-        real = m.group(1).replace("'\\''", "'").strip()
+        real = real.strip()
         if not real or real in seen or NOISE.match(real):
             continue
         seen.add(real)
-        if LONG_RUNNING.search(real):
-            kind = "long"
-        elif re.search(r"watch|monitor|tail -f|while |until |inbox-watch|pr-watch", real):
-            kind = "monitor"
-        else:
-            kind = "shell"
-        items.append({"kind": kind, "command": real})
+        items.append({"kind": classify(real), "command": real})
     return items
 
 

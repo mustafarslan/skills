@@ -23,10 +23,13 @@ other launchd agents keep running.
 2. **Snapshot.** Run `P plan` with the user's flags (`--only X`, `--exclude X`, `--label "…"`). It
    creates a planned park and stops nothing. From its JSON:
    - `parked`: sessions that will be parked (with branch, changed files, untracked files, and in
-     `restart` / `cron_prompts` the exact commands and crons that will be started again on resume);
+     `restart` / `cron_prompts` the exact commands and crons that will be started again on resume:
+     only watchers and servers; in `not_restarted` the one-off waits and scripts that end by
+     themselves, and anything it could not read whole, none of which comes back);
    - `skipped`: left alone, with the reason (pr-pulse's own workers: pr-pulse requeues their jobs);
    - `busy`: sessions in the middle of a turn;
-   - `long_running`: test runs, builds and the like that parking would cut off.
+   - `long_running`: test runs, builds, ship and deploy scripts that parking would cut off. These
+     are never started again on resume; the session is told they were cut off.
 3. **--notes only.** For each idle session in `parked` (not this one), SendMessage it: "We're parking
    for the day. In one or two sentences, what's your next step? Save it with
    `P note --park <id> --sid <its sid>` (text on stdin), then stop." Give them a minute; don't wait
@@ -34,7 +37,8 @@ other launchd agents keep running.
    session doesn't know it.)
 4. **Ask once** (AskUserQuestion), with the counts in the question: "Park N sessions (skip M:
    pr-pulse workers…), switch pr-pulse off and quit Terminal?" Before it, list every `restart`
-   command and cron prompt under its session, so nothing is started again on resume unseen. Options:
+   command and cron prompt under its session, so nothing is started again on resume unseen, and say
+   how many `not_restarted` commands each has (show them if the user asks). Options:
    - **Park now (Recommended)**
    - **Wait for busy ones** — only when `busy` or `long_running` is not empty; name them. Then wait
      (check `P plan` again later, or ask the user to come back), and ask again.

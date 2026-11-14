@@ -85,6 +85,60 @@ class InventoryTest(unittest.TestCase):
         self.assertIsNone(inv["docs"]["skipped_reason"])
 
 
+def wrap_real(command):
+    """A wrapper line as ps shows it: quotes written '"'"', newlines as \012."""
+    inner = command.replace("'", "'\"'\"'").replace("\n", "\\012")
+    return ("/bin/zsh -c source /Users/x/.claude/shell-snapshots/snapshot-zsh-1-a.sh 2>/dev/null || true && "
+            "{ \\builtin unalias -- 'which'; } >/dev/null 2>&1 || true && eval '" + inner +
+            "' < /dev/null && pwd -P >| /tmp/c")
+
+
+class CaptureTest(unittest.TestCase):
+    def test_nested_quotes_come_back_whole(self):
+        cmd = "cd /w; grep -o '\"[a-z_]*\"' facts.json | sort; timeout 118 bash -c 'until grep -q X f; do sleep 5; done'"
+        self.assertEqual(inventory.eval_command(wrap_real(cmd)), cmd)
+
+    def test_a_heredoc_without_dev_null_is_whole(self):
+        cmd = "python3 - <<'E'\nprint('x')\nE"
+        line = wrap_real(cmd).replace("' < /dev/null && pwd", "' && pwd")
+        self.assertEqual(inventory.eval_command(line), cmd)
+
+    def test_a_cut_off_line_is_never_a_command(self):
+        line = wrap_real("while true; do curl -s localhost:3000; sleep 5; done")
+        self.assertIsNone(inventory.eval_command(line[:line.index("< /dev/null") - 10]))
+        t = {1: (100, line[:line.index("< /dev/null") - 10])}
+        kinds = [c["kind"] for c in inventory.tool_commands(t, 100, me=999)]
+        self.assertEqual(kinds, ["partial"])
+
+    def test_kinds(self):
+        cases = {
+            "python3 - <<'EOF'\nprint(1)\nEOF": "oneoff",                       # inline script
+            "until ! pgrep -f x >/dev/null; do sleep 10; done; tail -8 log": "oneoff",   # a wait that ends
+            "for i in $(seq 1 50); do grep -q done log && break; sleep 10; done": "oneoff",
+            "cd /w && tools/test.sh BoyAndBubble.Backpack.Model > log 2>&1": "long",
+            "/tmp/s/batch-ship-queue.sh lanesb 46,90 lane-sync-head > run.log": "long",
+            "xcodebuild -scheme App test": "long",
+            "while true; do gh pr checks 5; sleep 60; done": "monitor",
+            "/h/.claude/pr-pulse/app/scripts/inbox-watch.sh s1": "monitor",
+            "tail -F server.log": "monitor",
+            "npm run dev": "shell",
+            "awk '{print $1}' f": "oneoff",
+        }
+        for cmd, kind in cases.items():
+            self.assertEqual(inventory.classify(cmd), kind, cmd)
+
+    def test_only_watchers_and_servers_are_restarted(self):
+        t = {1: (100, wrap_real("tools/test.sh A > log")), 2: (100, wrap_real("until x; do sleep 1; done; cat log")),
+             3: (100, wrap_real("npm run dev")), 4: (100, wrap_real("while true; do date; sleep 9; done"))}
+        con = db.connect(TMP / f"k{time.time_ns()}.db")
+        s = park.plan(con, sessions=[{"pid": 100, "cwd": "/w/none", "kind": "interactive", "sessionId": "k1",
+                                      "name": "k", "status": "idle"}], table=t, self_sid="other")
+        k = s["parked"][0]
+        self.assertEqual(sorted(k["restart"]), ["npm run dev", "while true; do date; sleep 9; done"])
+        self.assertEqual(k["not_restarted"], ["until x; do sleep 1; done; cat log"])
+        self.assertEqual(s["long_running"], [{"name": "k", "commands": ["tools/test.sh A > log"]}])
+
+
 class TranscriptTest(unittest.TestCase):
     def write(self, rows):
         p = TMP / f"t{time.time_ns()}.jsonl"
