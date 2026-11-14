@@ -254,14 +254,21 @@ def coordinate(con, park_id, self_pid=None, live=None):
                     (int(how in ("stopped", "already gone")), park_id, sid))
     db.event(con, "park.stopped", {"park": park_id, "results": results})
     mode = "claude" if partial and cfg.get("quit_terminal", "all") == "all" else cfg.get("quit_terminal", "all")
+    failed = [s for s, how in results.items() if how not in ("stopped", "already gone")]
+    done = {s for s, how in results.items() if how in ("stopped", "already gone")}
+    # A session that was not stopped is still running in its window: quitting Terminal would cut it off
+    # without park's careful stop. Then Terminal stays open and only the stopped sessions' windows close.
+    if mode == "all" and any(r["sid"] in failed for r in inter):
+        mode = "claude"
+        db.event(con, "park.terminal_kept", {"park": park_id, "not_stopped": failed})
     if mode == "all":
         terminal.quit_terminal()
     elif mode == "claude":
-        terminal.close_windows([r["tty"] for r in inter if r.get("tty")])
-    failed = [s for s, how in results.items() if how not in ("stopped", "already gone")]
+        terminal.close_windows([r["tty"] for r in inter if r.get("tty") and r["sid"] in done])
     con.execute("UPDATE parks SET status='parked' WHERE id=?", (park_id,))
     n = len(results) - len(failed)
-    terminal.notify(f"Parked {n} session(s)." + (f" {len(failed)} didn't stop: see park show." if failed else "")
+    terminal.notify(f"Parked {n} session(s)." + (f" {len(failed)} didn't stop, so Terminal stays open: see park show."
+                                                  if failed else "")
                     + " Run /park --resume to bring them back.")
     return results
 

@@ -83,7 +83,8 @@ other launchd agents keep running.
   session is told about them.
 - A park with a session never resumed is never cleaned up, however old: its patch may be the only copy.
 - The coordinator only signals a pid that `claude agents` still reports for that session; anything
-  else is left alone and reported as not stopped.
+  else is left alone and reported as not stopped. If any session was not stopped, Terminal is not
+  quit (only the stopped sessions' windows close), so nothing still running is cut off.
 - Never park without the one confirmation in /park step 4 (a full park quits Terminal).
 - Never resume a session that is already running, and never pass flags to `claude --resume` beyond
   the session id and the prompt: any flag starts a copy instead.

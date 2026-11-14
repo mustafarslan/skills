@@ -349,6 +349,30 @@ class CoordinatorTest(unittest.TestCase):
         self.assertTrue(park.alive(a))
         self.assertEqual(self.con.execute("SELECT stopped FROM sessions WHERE sid='one'").fetchone()[0], 0)
 
+    def test_terminal_is_not_quit_while_a_session_is_still_running(self):
+        a, b = self.procs
+        pid = self.con.execute("INSERT INTO parks(at) VALUES(?)", (time.time(),)).lastrowid
+        for sid, p, tty in (("stops", a, "/dev/ttys041"), ("unchecked", b, "/dev/ttys042")):
+            self.con.execute("INSERT INTO sessions(park_id, sid, name, kind, pid, tty, status_at_park) "
+                             "VALUES(?,?,?,'interactive',?,?,'idle')", (pid, sid, sid, p, tty))
+        # "unchecked" reports a different pid, so it is left running.
+        res = park.coordinate(self.con, pid, live=[{"sessionId": "stops", "pid": a, "status": "idle"},
+                                                     {"sessionId": "unchecked", "pid": 1, "status": "idle"}])
+        self.assertEqual(res["stops"], "stopped")
+        self.assertTrue(park.alive(b))
+        log = self.calls.read_text()
+        self.assertNotIn("to quit", log)          # Terminal stays open for the session still running
+        self.assertIn("/dev/ttys041", log)        # the stopped session's own window still closes
+        self.assertNotIn("/dev/ttys042", log)
+
+    def test_no_session_list_keeps_terminal_open(self):
+        a = self.procs[0]
+        pid = self.con.execute("INSERT INTO parks(at) VALUES(?)", (time.time(),)).lastrowid
+        self.con.execute("INSERT INTO sessions(park_id, sid, name, kind, pid, tty, status_at_park) "
+                         "VALUES(?, 'one', 'one', 'interactive', ?, '/dev/ttys043', 'idle')", (pid, a))
+        park.coordinate(self.con, pid, live=[])
+        self.assertFalse(self.calls.exists() and "to quit" in self.calls.read_text())
+
     def test_a_process_that_exits_before_the_signal_does_not_abort(self):
         done = subprocess.run(["sh", "-c", "sh -c 'exit 0' & echo $!; wait"], capture_output=True, text=True)
         dead = int(done.stdout.split()[0])
