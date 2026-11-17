@@ -1,0 +1,439 @@
+{
+ "title": "Checkout: retry storm",
+ "summary": "Review: three stacked retry layers turn a slow payment provider into a 64x call storm; one retry layer plus idempotency keys contains it.",
+ "grid": {
+  "cols": 4,
+  "rows": 3
+ },
+ "nodes": [
+  {
+   "id": "C",
+   "label": "Client",
+   "sub": "retries 3x",
+   "type": "actor",
+   "cell": [
+    0,
+    1
+   ]
+  },
+  {
+   "id": "GW",
+   "label": "API gateway",
+   "sub": "retries 3x",
+   "type": "service",
+   "cell": [
+    1,
+    1
+   ]
+  },
+  {
+   "id": "ORD",
+   "label": "Order service",
+   "sub": "retries PSP 3x",
+   "type": "service",
+   "cell": [
+    2,
+    1
+   ]
+  },
+  {
+   "id": "PG",
+   "label": "Postgres",
+   "sub": "8 country shards",
+   "type": "db",
+   "cell": [
+    3,
+    0
+   ]
+  },
+  {
+   "id": "PSP",
+   "label": "Payment provider",
+   "sub": "external",
+   "type": "ext",
+   "cell": [
+    3,
+    1
+   ]
+  },
+  {
+   "id": "K",
+   "label": "Kafka",
+   "sub": "OrderPlaced",
+   "type": "queue",
+   "cell": [
+    3,
+    2
+   ]
+  }
+ ],
+ "edges": [
+  {
+   "id": "c_gw",
+   "from": "C",
+   "to": "GW",
+   "label": "checkout",
+   "mode": "sync",
+   "route": "hv"
+  },
+  {
+   "id": "gw_ord",
+   "from": "GW",
+   "to": "ORD",
+   "label": "place order",
+   "mode": "sync",
+   "route": "hv"
+  },
+  {
+   "id": "ord_pg",
+   "from": "ORD",
+   "to": "PG",
+   "label": "write order",
+   "mode": "sync",
+   "route": "vh"
+  },
+  {
+   "id": "ord_psp",
+   "from": "ORD",
+   "to": "PSP",
+   "label": "charge card",
+   "mode": "sync",
+   "route": "hv"
+  },
+  {
+   "id": "ord_k",
+   "from": "ORD",
+   "to": "K",
+   "label": "publish",
+   "mode": "async",
+   "route": "vh"
+  }
+ ],
+ "metrics": [
+  {
+   "id": "p99",
+   "label": "checkout p99",
+   "unit": "ms",
+   "source": "nfr",
+   "target": "< 400"
+  },
+  {
+   "id": "orders",
+   "label": "peak orders",
+   "unit": "/s",
+   "source": "nfr"
+  },
+  {
+   "id": "attempts",
+   "label": "PSP calls/order",
+   "unit": "max",
+   "source": "derived"
+  },
+  {
+   "id": "psp",
+   "label": "PSP calls",
+   "unit": "/s",
+   "source": "derived"
+  },
+  {
+   "id": "dupes",
+   "label": "double charges",
+   "unit": "",
+   "source": "derived"
+  }
+ ],
+ "steps": [
+  {
+   "short": "Brief",
+   "chapter": "frame",
+   "title": "Checkout must hold p99 < 400 ms at 1,500 orders/s",
+   "body": [
+    "A marketplace checkout: write the order, charge the card, publish OrderPlaced. The targets that matter here are the given peak of 1,500 orders/s and p99 under 400 ms."
+   ],
+   "show": [
+    "C",
+    "ORD",
+    "PSP"
+   ],
+   "metrics": {
+    "orders": "1,500",
+    "p99": "-"
+   }
+  },
+  {
+   "short": "Draft",
+   "chapter": "draft",
+   "title": "One order, one charge, on the happy path",
+   "body": [
+    "Client calls the gateway, the order service writes the row to Postgres, charges the card and publishes to Kafka. When the provider is healthy each order makes one charge call: 1,500 calls/s at peak."
+   ],
+   "show": [
+    "C",
+    "GW",
+    "ORD",
+    "PG",
+    "PSP",
+    "K"
+   ],
+   "flows": [
+    {
+     "edge": "c_gw",
+     "packet": "req",
+     "rate": 2
+    },
+    {
+     "edge": "gw_ord",
+     "packet": "req",
+     "rate": 2
+    },
+    {
+     "edge": "ord_psp",
+     "packet": "req",
+     "rate": 2
+    }
+   ],
+   "metrics": {
+    "attempts": "1",
+    "psp": "1,500",
+    "dupes": "0"
+   },
+   "changes": [
+    "+ Gateway, order service, Postgres, Kafka",
+    "~ PSP calls 0 -> 1,500 /s"
+   ]
+  },
+  {
+   "short": "What breaks",
+   "chapter": "problem",
+   "title": "Three retry layers multiply, they do not add",
+   "body": [
+    "Client, gateway and order service each retry 3 times, so each layer makes up to 4 attempts. Stacked, one checkout can reach the provider 4 x 4 x 4 = 64 times (derived from the Design section)."
+   ],
+   "callout": {
+    "kind": "warn",
+    "text": "The 'Gateway retries' row prices this as latency only. It is an amplifier."
+   },
+   "changes": [
+    "~ PSP calls/order 1 -> 64 worst case"
+   ],
+   "show": [
+    "C",
+    "GW",
+    "ORD",
+    "PG",
+    "PSP",
+    "K"
+   ],
+   "focus": "GW",
+   "metrics": {
+    "attempts": "64"
+   },
+   "breach": [
+    "attempts"
+   ],
+   "doc_anchor": "#design"
+  },
+  {
+   "short": "PSP slows",
+   "chapter": "case",
+   "title": "A slow provider gets 96,000 calls a second",
+   "body": [
+    "The provider slows past the timeouts. Every layer sees failures and retries: 1,500 orders/s x 64 = 96,000 calls/s at the provider, which rate-limits or falls over. Order-service threads wait on it, the pool fills, and checkout p99 blows past 400 ms."
+   ],
+   "changes": [
+    "~ PSP calls 1,500 -> 96,000 /s",
+    "~ p99 -> timeout",
+    "- Availability target missed"
+   ],
+   "show": [
+    "C",
+    "GW",
+    "ORD",
+    "PG",
+    "PSP",
+    "K"
+   ],
+   "focus": "PSP",
+   "state": {
+    "PSP": "degraded"
+   },
+   "overlays": [
+    {
+     "on": "PSP",
+     "gauge": 100,
+     "label": "! 96,000 calls/s"
+    },
+    {
+     "on": "ORD",
+     "gauge": 100,
+     "label": "! pool full"
+    }
+   ],
+   "flows": [
+    {
+     "edge": "c_gw",
+     "packet": "retry",
+     "rate": 4
+    },
+    {
+     "edge": "gw_ord",
+     "packet": "retry",
+     "rate": 5
+    },
+    {
+     "edge": "ord_psp",
+     "packet": "fail",
+     "rate": 6,
+     "held": 14
+    }
+   ],
+   "metrics": {
+    "psp": "96,000",
+    "p99": "timeout"
+   },
+   "breach": [
+    "psp"
+   ]
+  },
+  {
+   "short": "Double charge",
+   "chapter": "case",
+   "title": "A timed-out charge that succeeded is charged again",
+   "body": [
+    "A timeout does not mean the charge failed. The doc sends no idempotency key, so each retry of a charge the provider already accepted is a new charge: up to 64 for one cart. Money moves twice; refunds and support follow."
+   ],
+   "changes": [
+    "~ double charges 0 -> possible on every timeout"
+   ],
+   "show": [
+    "C",
+    "GW",
+    "ORD",
+    "PG",
+    "PSP",
+    "K"
+   ],
+   "focus": "PSP",
+   "state": {
+    "PSP": "degraded"
+   },
+   "flows": [
+    {
+     "edge": "ord_psp",
+     "packet": "retry",
+     "rate": 3
+    }
+   ],
+   "metrics": {
+    "dupes": "possible"
+   },
+   "breach": [
+    "dupes"
+   ]
+  },
+  {
+   "short": "One layer",
+   "chapter": "fix",
+   "title": "Retry in one place only: 64 -> 4 calls per order",
+   "body": [
+    "Only the order service retries the provider (3 retries, jittered backoff). The gateway does not retry; the client does not resend on 5xx but polls the order status. Worst case falls to 1,500 x 4 = 6,000 calls/s."
+   ],
+   "callout": {
+    "kind": "insight",
+    "text": "Cost: a slow charge now surfaces to the user as 'processing' instead of being hidden by retries."
+   },
+   "changes": [
+    "~ PSP calls/order 64 -> 4",
+    "~ PSP calls 96,000 -> 6,000 /s"
+   ],
+   "show": [
+    "C",
+    "GW",
+    "ORD",
+    "PG",
+    "PSP",
+    "K"
+   ],
+   "focus": "GW",
+   "state": {
+    "GW": "new"
+   },
+   "flows": [
+    {
+     "edge": "ord_psp",
+     "packet": "retry",
+     "rate": 2
+    }
+   ],
+   "metrics": {
+    "attempts": "4",
+    "psp": "6,000"
+   },
+   "decision": "Gateway retries"
+  },
+  {
+   "short": "Idempotency",
+   "chapter": "fix",
+   "title": "One key per order: a retry can never charge twice",
+   "body": [
+    "The order service sends the order id as the provider's idempotency key on every attempt, so a retried charge returns the first result instead of charging again."
+   ],
+   "callout": {
+    "kind": "insight",
+    "text": "Cost: the key must be stored with the order and reused across restarts; the provider's key window bounds how late a retry may come."
+   },
+   "changes": [
+    "~ double charges possible -> 0"
+   ],
+   "show": [
+    "C",
+    "GW",
+    "ORD",
+    "PG",
+    "PSP",
+    "K"
+   ],
+   "focus": "ORD",
+   "state": {
+    "ORD": "new"
+   },
+   "flows": [
+    {
+     "edge": "ord_psp",
+     "packet": "req",
+     "rate": 2
+    },
+    {
+     "edge": "ord_psp",
+     "packet": "res",
+     "rate": 2
+    }
+   ],
+   "metrics": {
+    "dupes": "0"
+   },
+   "final": true
+  },
+  {
+   "short": "Recap",
+   "chapter": "recap",
+   "title": "Same boxes, one retry layer, no double charges",
+   "body": [
+    "Steady state: 1,500 charge calls/s, worst case 6,000/s when the provider struggles instead of 96,000, and every charge is idempotent. Other findings (outbox for Kafka, DB-backed liveness probe, nightly backups vs RPO 1 min) are in the review log."
+   ],
+   "show": [
+    "C",
+    "GW",
+    "ORD",
+    "PG",
+    "PSP",
+    "K"
+   ],
+   "metrics": {
+    "psp": "1,500",
+    "attempts": "4",
+    "dupes": "0"
+   }
+  }
+ ]
+}

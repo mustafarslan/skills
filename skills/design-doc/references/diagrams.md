@@ -14,6 +14,7 @@ it to the other.
 - [Layout](#layout)
 - [Worked example](#worked-example)
 - [Dark variant (video and dark blocks)](#dark-variant-video-and-dark-blocks)
+- [Motion and packets](#motion-and-packets)
 - [From Mermaid](#from-mermaid)
 - [Checklist](#checklist)
 
@@ -231,6 +232,27 @@ both variants. Change the arrow marker's fill to `#B3B3B3`.
 `--v-caption` (40px at 1080p) - with these 14px names that is a scale of about 2.9, so a
 1920-wide frame holds at most 4-5 nodes across. Build it up one node or edge at a time (one
 animated moment per chapter, see `moments.md` in design-video); the focus node arrives last.
+
+## Motion and packets
+
+For diagrams that move (a `design-video` chapter, a `system-design --walkthrough` page). The
+still rules above all hold; motion adds no hue.
+
+- **Packets show what travels, by shape:** filled dot = request, hollow dot = response (travels
+  back), crossed square = failed request (stops part-way and fades), dashed ring = retry, diamond =
+  async event or message, small ring = heartbeat. Ink on light, light grey on dark.
+- **A backlog is packets standing still:** a row of dots at the far end of the edge with
+  "N waiting" under it.
+- **State is a glyph and a word under the node** (`✕ down`, `! degraded`, `+ new`, `− removed`);
+  a down node is drawn dashed and faded with a `✕` in its corner. A broken link (a partition) is a
+  sparse dotted edge with `✕ cut` at its middle.
+- **Load is a bar under the node** (utilisation 0-100%, ink on the rule grey); a number that
+  matters sits in a badge above the node, solid ink when it is bad (`! pool 100/100`).
+- **One thing moves at a time.** New nodes fade and rise in (ease-out, about 0.5 s); a moved node
+  slides (ease-in-out); the focus node gets the accent and a brief heavier outline. Animate only
+  the path the step is about.
+- **Reduced motion:** with `prefers-reduced-motion`, nothing travels; each flow shows one packet
+  standing on its edge.
 
 ## From Mermaid
 

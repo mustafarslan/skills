@@ -1,0 +1,118 @@
+{
+  "assumptions": {
+    "reads_per_day": 330000000.0,
+    "writes_per_day": 3300000.0,
+    "peak_multiplier": 3.0,
+    "write_bytes": 500.0,
+    "replication_factor": 3,
+    "years": 5.0,
+    "yearly_growth": 0.0,
+    "index_overhead": 0.0,
+    "read_bytes": 500.0,
+    "hot_fraction": 0.2,
+    "db_ms": 2.0,
+    "db_read_fraction": 1.0
+  },
+  "triggers": [],
+  "traffic": {
+    "reads_per_day": 330000000.0,
+    "writes_per_day": 3300000.0,
+    "avg_read_qps": 3819.44,
+    "avg_write_qps": 38.19,
+    "peak_read_qps": 11458.33,
+    "peak_write_qps": 114.58,
+    "read_write_ratio": 100.0,
+    "peak_db_read_qps": 11458.33
+  },
+  "storage": {
+    "logical_per_day_gib": 1.537,
+    "logical_total_tib": 2.739,
+    "replicated_total_tib": 8.216,
+    "peak_ingress_mbps": 0.46
+  },
+  "bandwidth": {
+    "peak_egress_mbps": 45.83
+  },
+  "cache": {
+    "daily_read_volume_gib": 153.668,
+    "hot_set_upper_bound_gib": 30.734,
+    "note": "upper bound: assumes every read is a distinct object; real hot sets are smaller when reads repeat"
+  },
+  "concurrency": {
+    "busy_db_connections_at_peak": 23.0,
+    "method": "Little's law: concurrency = arrival rate x time in system"
+  },
+  "scale_path": {
+    "10x": {
+      "headlines": {
+        "traffic.peak_read_qps": 114583.33,
+        "traffic.peak_write_qps": 1145.83,
+        "storage.replicated_total_tib": 82.161,
+        "cache.hot_set_upper_bound_gib": 307.336,
+        "bandwidth.peak_egress_mbps": 458.33,
+        "concurrency.busy_db_connections_at_peak": 231.0
+      },
+      "triggers": [
+        "single_node_read_qps",
+        "redis_single_instance_ops",
+        "storage_tib_single_node",
+        "db_connections_per_node"
+      ]
+    },
+    "100x": {
+      "headlines": {
+        "traffic.peak_read_qps": 1145833.33,
+        "traffic.peak_write_qps": 11458.33,
+        "storage.replicated_total_tib": 821.615,
+        "cache.hot_set_upper_bound_gib": 3073.364,
+        "bandwidth.peak_egress_mbps": 4583.33,
+        "concurrency.busy_db_connections_at_peak": 2315.0
+      },
+      "triggers": [
+        "single_primary_write_qps",
+        "single_node_read_qps",
+        "redis_single_instance_ops",
+        "storage_tib_single_node",
+        "db_connections_per_node"
+      ]
+    }
+  },
+  "sensitivity": {
+    "guessed_inputs": [
+      "peak",
+      "write-bytes"
+    ],
+    "factors": [
+      0.5,
+      2.0
+    ],
+    "ranges": {
+      "traffic.peak_read_qps": [
+        7638.89,
+        19097.22
+      ],
+      "traffic.peak_write_qps": [
+        76.39,
+        190.97
+      ],
+      "storage.replicated_total_tib": [
+        4.108,
+        16.432
+      ],
+      "cache.hot_set_upper_bound_gib": [
+        30.734,
+        30.734
+      ],
+      "bandwidth.peak_egress_mbps": [
+        30.56,
+        76.39
+      ],
+      "concurrency.busy_db_connections_at_peak": [
+        15.0,
+        39.0
+      ]
+    },
+    "triggers_only_at_high": [],
+    "note": "all guessed inputs move together (the worst case), so a product of k guesses spans factor^k; a trigger that appears only at the high end means a design decision depends on a guess - confirm that input first"
+  }
+}

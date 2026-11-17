@@ -31,6 +31,23 @@ CASES = [
       "estimated peak and the 100x load (scale-down, error-rate and per-key triggers are exempt), "
       "and none has already fired by the doc's own numbers."], None),
 
+    ("walkthrough-url-shortener", ["walkthrough"], 60, 1800,
+     f"/system-design --walkthrough a URL shortener. 100M new short links per month, reads are about "
+     f"100x writes, links never expire, p99 redirect latency under 50 ms. {NOUSER}",
+     "The design doc as in url-shortener-capacity, plus docs/design/url-shortener.steps.json and the "
+     "page render_walkthrough.py builds from it (docs/design/url-shortener.walkthrough.html), made "
+     "after the design gate passed. The steps tell the design in order (brief, numbers, draft, what "
+     "breaks, fixes, one failure walked, recap), carry the calculator's numbers, and end on the doc's "
+     "own diagram and trade-off table.",
+     ["The steps file has a peak redirect metric whose source starts with calc: (the calculator), "
+      "showing a value between 3,000 and 40,000 per second.",
+      "The steps file walks at least one failure: a step where a component is down or degraded, or "
+      "requests fail, followed by a step that shows the defence.",
+      "The steps file adds components one step at a time, and each step that adds or fixes something "
+      "has a changes list with at least one before -> after number.",
+      "The steps file's chapters run in a sensible order: framing and numbers before the first draft, "
+      "a problem before the fix that answers it, and a recap last."], None),
+
     ("expense-tool-small-team", ["smoke"], 40, 1200,
      "/system-design an internal expense approval tool. 300 employees, 4 engineers who know "
      "TypeScript and Postgres, approvals go through up to 3 managers, receipts are photos, SSO with "
@@ -476,6 +493,11 @@ CALC = {"type": "tool_used", "tool": "Bash", "input_match": "capacity_calc\\.py"
 DOC = {"type": "file_exists", "path": "docs/design/*.md", "slug": "design-doc-written"}
 EXTRA = {
     "url-shortener-capacity": [CALC, DOC],
+    "walkthrough-url-shortener": [CALC, DOC,
+        {"type": "file_exists", "path": "docs/design/url-shortener.steps.json", "slug": "steps-written"},
+        {"type": "file_exists", "path": "docs/design/url-shortener.walkthrough.html", "slug": "page-rendered"},
+        {"type": "tool_used", "tool": "Bash", "input_match": "render_walkthrough\\.py", "slug": "ran-renderer"},
+        {"type": "tool_used", "tool": "Read", "input_match": "references/walkthrough\\.md", "slug": "read-walkthrough-ref"}],
     "expense-tool-small-team": [DOC],
     "chat-storage-hot-partition": [CALC, DOC, {
         "type": "regex", "target": "{ source: file, path: docs/design/chat-storage.md }",
@@ -494,6 +516,7 @@ EXTRA = {
 
 DOC_PATH = {
     "url-shortener-capacity": "docs/design/url-shortener.md",
+    "walkthrough-url-shortener": "docs/design/url-shortener.md",
     "expense-tool-small-team": "docs/design/expense-approval.md",
     "chat-storage-hot-partition": "docs/design/chat-storage.md",
     "order-payment-idempotency": "docs/design/order-payment.md",
@@ -515,6 +538,8 @@ def focus_for(name, text):
         return "{ source: file, path: docs/adr/0003-sessions-in-postgres.md }"
     if name in ("ledger-cassandra-steer", "ledger-cache-steer"):
         return "{ source: file, path: docs/design/ledger.md }" if low.startswith("docs/design/ledger.md") else "trace"
+    if low.startswith("the steps file"):
+        return "{ source: file, path: docs/design/url-shortener.steps.json }"
     if doc and not low.startswith(TRACE_WORDS):
         return f"{{ source: file, path: {doc} }}"
     return "trace"

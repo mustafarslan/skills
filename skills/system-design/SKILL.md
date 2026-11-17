@@ -1,7 +1,7 @@
 ---
 name: system-design
 description: Designs, reviews and stress-tests software systems at a staff-engineer bar - requirements and non-goals first, capacity math from a script, the simplest design that meets the numbers, failure cascades and disaster recovery, and a trade-off table with a measurable trigger per decision. Use whenever the user asks to design or architect a system or service, choose between technologies (Kafka vs SQS, Postgres vs DynamoDB, monolith vs microservices), partition or shard data, estimate capacity, review a design doc, write or review an ADR, or practise a system design interview as candidate or interviewer, for SaaS, e-commerce, fintech, mobile, IoT, data or AI/RAG systems. Not for writing application code, product requirements (spm), styling a document (design-doc), explaining a single concept, or writing interview question lists.
-argument-hint: "[problem] [--interview [candidate|interviewer]] [--review <path>] [--deep-dive <topic>] [--html]"
+argument-hint: "[problem] [--interview [candidate|interviewer]] [--review <path>] [--deep-dive <topic>] [--html] [--walkthrough]"
 allowed-tools: Read, Grep, Glob, Write, Edit, Agent, AskUserQuestion, Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/*), Bash(agy-ask *)
 ---
 
@@ -66,6 +66,11 @@ Parse `$ARGUMENTS`. The first non-flag words are the problem.
 
 `--html` also renders the diagram as styled HTML+SVG (see `references/output-templates.md`).
 Without it, diagrams are Mermaid blocks in the Markdown.
+
+`--walkthrough` (or an explicit ask for an animated or step-by-step walkthrough page) also builds an animated
+step-by-step page from the finished doc: brief, numbers, draft, what breaks, each fix, one failure
+walked hop by hop, 10x, trade-offs. Design, review and deep-dive modes; never interview mode. It is
+made last, in phase 10 (`references/walkthrough.md`).
 
 In **design** mode, if the project already has an architecture (code, `docs/`, ADRs), read
 enough of it first to know what exists: this is brownfield, and the migration is part of the
@@ -196,6 +201,11 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/check_design.py docs/design/<slug>.md --calc
 python3 ${CLAUDE_SKILL_DIR}/scripts/check_design.py docs/adr/NNNN-<slug>.md --kind adr
 ```
 
+With `--walkthrough`, now load `references/walkthrough.md`, write `<slug>.steps.json` next to
+the doc and run `python3 ${CLAUDE_SKILL_DIR}/scripts/render_walkthrough.py <path>/<slug>.steps.json`
+until it prints `WALKTHROUGH_OK`. Design mode: after `DESIGN_OK`. Review mode: after the findings
+are written, walking the most severe one. Deep-dive mode: after the write-up.
+
 `DESIGN_OK` means the structure is there, not that the design is good. Report to the user: the
 decision summary, the open questions and assumed inputs that most move the design, reviewer and
 agy findings (accepted / rejected and why), and the gate result.
@@ -217,6 +227,7 @@ agy findings (accepted / rejected and why), and the gate result.
 | `references/evolution-migration.md` | 10x/100x, brownfield, migrations and backfills, cells, team boundaries |
 | `references/interview-mode.md` | interview mode: time boxes, level bar, interviewer script, scoring |
 | `references/output-templates.md` | writing the design doc, ADRs, the trade-off table, diagrams |
+| `references/walkthrough.md` | `--walkthrough` only, in phase 10: the steps file and its gate |
 
 ## Output
 
@@ -227,4 +238,6 @@ add a new ADR that supersedes it; the only change allowed in the old one is its 
 chat, keep the answer to the decisions and the open questions; the detail lives in the doc.
 
 Ideas in this skill draw on proyecto26/system-design-skills and alirezarezvani/claude-skills
-(both MIT); the text is original.
+(both MIT); the text is original. The walkthrough's step-by-step format (one scene changed step by
+step, a "what changed" list, metric chips, animated packets) was inspired by the designed-to-scale
+course (designed-to-scale.vercel.app); its player, look and text are original.
