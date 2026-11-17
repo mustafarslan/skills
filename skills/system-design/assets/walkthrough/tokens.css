@@ -1,0 +1,68 @@
+/* Shared design tokens for design-doc and design-video.
+   The two skills each carry a copy of this file; the copies must stay byte-identical
+   (check: `cmp design-doc/references/tokens.css design-video/references/tokens.css`).
+
+   Scheme: ACHROMATIC WITH ONE CHROMATIC ACCENT.
+   - Every neutral has R = G = B (no tint). Check: each neutral hex below is three equal pairs.
+   - Exactly one hue exists: the accent (a warm yellow). There is no second colour.
+   - Meaning that other systems carry with red/green/blue (warning, success, error) is carried
+     here by glyphs, labels and weight, never by another hue. */
+
+:root {
+  /* Neutrals (R = G = B) */
+  --bg:            #FFFFFF;  /* page background */
+  --surface:       #F2F2F2;  /* quiet surface: zebra rows, code-free panels */
+  --rule:          #DADADA;  /* 1px rules, borders (decorative only: never carries text) */
+  --text-3:        #5C5C5C;  /* secondary text. 6.69:1 on white, 5.97:1 on --surface */
+  --text-2:        #2E2E2E;  /* dense body text. 13.58:1 on white */
+  --text-1:        #121212;  /* headlines, primary text. 18.73:1 on white */
+
+  /* Dark surfaces (video frames, code blocks, dark callouts) */
+  --dark-bg:       #0A0A0A;  /* video background */
+  --dark-surface:  #161616;  /* dark panel */
+  --dark-raised:   #242424;  /* raised dark panel, dark borders */
+  --on-dark-1:     #F5F5F5;  /* text on dark. 16.60:1 on --dark-surface */
+  --on-dark-2:     #B3B3B3;  /* secondary text on dark. 8.63:1 on --dark-surface, 7.40:1 on --dark-raised */
+
+  /* The single accent */
+  --accent:        #FFC800;  /* a FILL, never text on a light surface (1.55:1 on white) */
+  --accent-strong: #E0AE00;  /* pressed / hover fill; ink on it is 9.12:1 */
+
+  /* Rules that go with the colours:
+     - ink on --accent is 12.06:1: text on an accent fill is always --text-1.
+     - --accent as TEXT is allowed only on --dark-bg, --dark-surface, --dark-raised (9.99:1 or more).
+     - Proportion of any page or frame: about 60% light neutrals, 30% dark or mid neutrals,
+       at most 10% accent. */
+
+  /* Type: system stacks only, no webfont is required */
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  /* Type scale, ratio 1.25 from a 16px base (documents and apps; video has its own scale) */
+  --t-xs:   13px;
+  --t-sm:   14px;
+  --t-base: 16px;
+  --t-lg:   20px;
+  --t-xl:   25px;
+  --t-2xl:  31px;
+  --t-3xl:  39px;
+  --t-4xl:  49px;
+
+  /* Spacing, 4px base */
+  --s-1: 4px;  --s-2: 8px;  --s-3: 12px; --s-4: 16px;
+  --s-5: 24px; --s-6: 32px; --s-7: 40px; --s-8: 56px;
+
+  /* Video scale at 1920x1080 (used by design-video; px are frame pixels, ratio 1.25 from 40) */
+  --v-caption:  40px;
+  --v-body:     50px;
+  --v-subtitle: 63px;
+  --v-title:    78px;
+  --v-hero:     98px;
+  --v-display:  122px;
+  --v-cell:     120px;   /* layout cell: a 16 x 9 grid of 120px cells */
+
+  /* Measure and shape */
+  --measure: 70ch;      /* prose line length */
+  --wide:    1100px;    /* tables, figures */
+  --radius:  2px;       /* corners stay nearly square */
+}

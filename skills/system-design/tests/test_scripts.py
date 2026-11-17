@@ -5,6 +5,7 @@ Run from the repo root:  python3 -I -m unittest discover -s skills/system-design
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -17,6 +18,9 @@ sys.path.insert(0, SCRIPTS)
 
 import capacity_calc  # noqa: E402
 import check_design  # noqa: E402
+import render_walkthrough  # noqa: E402
+
+FIXTURE = os.path.join(HERE, "fixtures", "url-shortener")
 
 
 def calc(*argv):
@@ -551,6 +555,227 @@ class CheckDesignTests(unittest.TestCase):
         self.assertEqual(ko.returncode, 1)
         self.assertFalse(json.loads(ko.stdout)["ok"])
         self.assertEqual(missing.returncode, 2)
+
+
+class RenderWalkthroughTests(unittest.TestCase):
+    """The walkthrough gate: the steps file must agree with the doc, the calculator and the
+    layout rules, and the bundled page must be one offline file."""
+
+    def load(self):
+        with open(os.path.join(FIXTURE, "url-shortener.steps.json"), encoding="utf-8") as fh:
+            spec = json.load(fh)
+        with open(os.path.join(FIXTURE, "url-shortener.md"), encoding="utf-8") as fh:
+            doc = fh.read()
+        with open(os.path.join(FIXTURE, "url-shortener.calc.json"), encoding="utf-8") as fh:
+            calc_out = json.load(fh)
+        return spec, doc, calc_out
+
+    def problems(self, mutate=None, doc_edit=None):
+        spec, doc, calc_out = self.load()
+        if mutate:
+            mutate(spec)
+        if doc_edit:
+            doc = doc_edit(doc)
+        return render_walkthrough.validate(spec, doc, calc_out)[0]
+
+    def assertFlags(self, needle, **kw):
+        probs = self.problems(**kw)
+        self.assertTrue(any(needle in p for p in probs), probs)
+
+    def step(self, spec, short):
+        return next(s for s in spec["steps"] if s["short"] == short)
+
+    def test_fixture_passes(self):
+        self.assertEqual(self.problems(), [])
+
+    def test_docless_fixture_passes(self):
+        # review / deep-dive shape: no doc, no calculator; exercises cut, zone_state, cells,
+        # hide_edges, timeline and note panels, heartbeat, breach and an external node
+        with open(os.path.join(HERE, "fixtures", "two-region-seats", "two-region-seats.steps.json"), encoding="utf-8") as fh:
+            spec = json.load(fh)
+        probs, notes = render_walkthrough.validate(spec, None, None)
+        self.assertEqual(probs, [])
+        used = json.dumps(spec)
+        for feature in ('"cut"', '"zone_state"', '"cells"', '"hide_edges"', '"timeline"', '"note"',
+                        '"heartbeat"', '"breach"', '"ext"', '"degraded"'):
+            self.assertIn(feature, used)
+
+    def test_review_mode_fixture_passes(self):
+        # written by a fresh agent from references/walkthrough.md alone, for review-seeded-defects
+        with open(os.path.join(HERE, "fixtures", "review-checkout", "checkout.steps.json"), encoding="utf-8") as fh:
+            spec = json.load(fh)
+        self.assertEqual(render_walkthrough.validate(spec, None, None)[0], [])
+
+    def test_unknown_zone_state(self):
+        def m(spec):
+            spec["steps"][1]["zone_state"] = {"mars": "down"}
+        self.assertFlags("unknown zone", mutate=m)
+
+    def test_fixture_doc_passes_the_design_gate(self):
+        spec, doc, calc_out = self.load()
+        self.assertEqual(check_design.check(doc, "design", calc=calc_out)[0], [])
+
+    def test_two_nodes_in_one_cell(self):
+        def m(spec):
+            spec["nodes"][5]["cell"] = [2, 1]  # IDS onto API
+        self.assertFlags("share cell", mutate=m)
+
+    def test_cell_outside_grid(self):
+        def m(spec):
+            spec["nodes"][7]["cell"] = [5, 2]
+        self.assertFlags("inside the", mutate=m)
+
+    def test_node_inside_someone_elses_zone(self):
+        def m(spec):
+            spec["nodes"][0]["cell"] = [2, 0]  # client inside the region's box
+        self.assertFlags("is not in it", mutate=m)
+
+    def test_one_focus_only(self):
+        def m(spec):
+            spec["steps"][2]["focus"] = ["KV", "API"]
+        self.assertFlags("one focus", mutate=m)
+
+    def test_too_many_nodes(self):
+        def m(spec):
+            spec["grid"] = {"cols": 8, "rows": 6}
+            for k in range(8):
+                spec["nodes"].append({"id": f"X{k}", "label": f"Extra {k}", "cell": [k, 5]})
+            spec["steps"][2]["show"] = spec["steps"][2]["show"] + [f"X{k}" for k in range(8)] + ["R", "IDS", "Q", "AN"]
+        self.assertFlags("at most 15", mutate=m)
+
+    def test_calc_metric_must_match_the_calculator(self):
+        def m(spec):
+            self.step(spec, "Numbers")["metrics"]["peak"] = "20,000"
+        self.assertFlags("calculator says", mutate=m)
+
+    def test_scale_step_multiplies_the_calculator(self):
+        def m(spec):
+            self.step(spec, "10x")["metrics"]["peak"] = "11,458"  # forgot the x10
+        self.assertFlags("x 10", mutate=m)
+
+    def test_final_step_must_match_mermaid(self):
+        def m(spec):
+            self.step(spec, "Clicks")["show"].remove("AN")
+        self.assertFlags("does not match the doc", mutate=m)
+
+    def test_mermaid_edge_missing_from_steps(self):
+        self.assertFlags("edges do not match",
+                         doc_edit=lambda d: d.replace("  Q -.-> AN[Click counter]", "  Q -.-> AN[Click counter]\n  KV --> AN"))
+
+    def test_exactly_one_final_step(self):
+        def m(spec):
+            self.step(spec, "Recap")["final"] = True
+        self.assertFlags("exactly one step", mutate=m)
+
+    def test_decision_must_be_a_tradeoff_row(self):
+        def m(spec):
+            self.step(spec, "Cache")["decision"] = "Use Memcached"
+        self.assertFlags("not a row", mutate=m)
+
+    def test_steps_need_changes(self):
+        def m(spec):
+            del self.step(spec, "Cache")["changes"]
+        self.assertFlags("needs a 'changes' list", mutate=m)
+
+    def test_flow_on_hidden_edge(self):
+        def m(spec):
+            self.step(spec, "Draft")["flows"].append({"edge": "api_q", "packet": "async"})
+        self.assertFlags("not visible", mutate=m)
+
+    def test_unknown_packet_kind(self):
+        def m(spec):
+            self.step(spec, "Draft")["flows"][0]["packet"] = "photon"
+        self.assertFlags("packet 'photon'", mutate=m)
+
+    def test_bad_anchor(self):
+        def m(spec):
+            self.step(spec, "Cache")["doc_anchor"] = "#nowhere"
+        self.assertFlags("matches no heading", mutate=m)
+
+    def test_mermaid_parser(self):
+        nodes, edges = render_walkthrough.mermaid_graph(self.load()[1])
+        self.assertEqual(set(nodes), {"C", "LB", "API", "R", "KV", "IDS", "Q", "AN"})
+        self.assertEqual(nodes["R"], "Redis cache")
+        self.assertIn(("API", "Q"), edges)
+        self.assertIn(("Q", "AN"), edges)
+        self.assertEqual(len(edges), 7)
+
+    def test_mermaid_parser_hard_cases(self):
+        doc = """```mermaid
+flowchart LR
+  subgraph Edge
+    CDN[CDN] --> LB[L7 load balancer]
+  end
+  LB -- HTTPS --> API[API service]
+  API -- cache-aside --> R[(Redis)]
+  API -. OrderPlaced via outbox .-> K[[Kafka]]
+  click_stream[Click stream] --> clickhouse[(ClickHouse)]
+  GW -- gRPC (mTLS) --> S["POST /links (302)"]
+  A & B -->|label| C:::hot
+```"""
+        nodes, edges = render_walkthrough.mermaid_graph(doc)
+        self.assertEqual(set(nodes), {"CDN", "LB", "API", "R", "K", "click_stream", "clickhouse",
+                                      "GW", "S", "A", "B", "C"})  # no phantom nodes from labels
+        self.assertEqual(nodes["S"], "POST /links (302)")
+        self.assertEqual(nodes["R"], "Redis")
+        for e in [("CDN", "LB"), ("API", "R"), ("API", "K"), ("click_stream", "clickhouse"),
+                  ("GW", "S"), ("A", "C"), ("B", "C")]:
+            self.assertIn(e, edges)
+        self.assertEqual(len(edges), 8)
+
+    def test_mermaid_example_in_output_templates_parses(self):
+        with open(os.path.join(os.path.dirname(HERE), "references", "output-templates.md"), encoding="utf-8") as fh:
+            nodes, edges = render_walkthrough.mermaid_graph(fh.read())
+        self.assertEqual(set(nodes), {"CDN", "LB", "API", "DB", "R", "K", "W"})
+        self.assertEqual(len(edges), 6)
+
+    def test_number_parsing(self):
+        self.assertEqual(render_walkthrough.number("11,458"), 11458)
+        self.assertAlmostEqual(render_walkthrough.number("114.6k"), 114600)
+        self.assertEqual(render_walkthrough.number("2,300 ms"), 2300)
+        self.assertIsNone(render_walkthrough.number("none"))
+
+    def test_cli_bundles_one_offline_page(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "w", "url-shortener.walkthrough.html")
+            script = os.path.join(SCRIPTS, "render_walkthrough.py")
+            ok = subprocess.run([sys.executable, "-I", script, os.path.join(FIXTURE, "url-shortener.steps.json"),
+                                 "--out", out], capture_output=True, text=True)
+            self.assertEqual(ok.returncode, 0, ok.stdout + ok.stderr)
+            self.assertIn("WALKTHROUGH_OK", ok.stdout)
+            with open(out, encoding="utf-8") as fh:
+                page = fh.read()
+        # no external resource of any kind: the only URL is the SVG namespace string
+        urls = set(re.findall(r"https?://[^\s\"')]+", page))
+        self.assertEqual(urls, {"http://www.w3.org/2000/svg"})
+        self.assertNotIn("<link", page)
+        self.assertNotIn("@import", page)
+        self.assertIn('id="wt-data"', page)
+        self.assertEqual(page.count("</script>"), 2)  # the data cannot close its own tag
+
+    def test_cli_reports_gaps_and_writes_nothing(self):
+        spec, _doc, _calc = self.load()
+        spec["steps"][2]["focus"] = "NOPE"
+        with tempfile.TemporaryDirectory() as d:
+            for name in ("url-shortener.md", "url-shortener.calc.json"):
+                with open(os.path.join(FIXTURE, name), encoding="utf-8") as src, \
+                        open(os.path.join(d, name), "w", encoding="utf-8") as dst:
+                    dst.write(src.read())
+            path = os.path.join(d, "url-shortener.steps.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(spec, fh)
+            script = os.path.join(SCRIPTS, "render_walkthrough.py")
+            ko = subprocess.run([sys.executable, "-I", script, path, "--json"], capture_output=True, text=True)
+            self.assertEqual(ko.returncode, 1)
+            self.assertFalse(json.loads(ko.stdout)["ok"])
+            self.assertFalse(os.path.exists(os.path.join(d, "url-shortener.walkthrough.html")))
+
+    def test_tokens_match_the_house_copy(self):
+        house = os.path.join(os.path.dirname(os.path.dirname(HERE)), "design-doc", "references", "tokens.css")
+        if not os.path.exists(house):
+            self.skipTest("design-doc not installed next to this skill")
+        with open(house, "rb") as a, open(os.path.join(render_walkthrough.ASSETS, "tokens.css"), "rb") as b:
+            self.assertEqual(a.read(), b.read(), "copy design-doc/references/tokens.css to assets/walkthrough/")
 
 
 if __name__ == "__main__":

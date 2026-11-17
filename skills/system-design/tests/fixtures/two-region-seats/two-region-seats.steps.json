@@ -1,0 +1,110 @@
+{
+  "title": "Seat booking in two regions",
+  "summary": "Deep dive: why two writable regions oversell, and what a seat ledger costs.",
+  "grid": {"cols": 4, "rows": 3},
+  "zones": [{"id": "us", "label": "US region"}, {"id": "eu", "label": "EU region"}],
+  "nodes": [
+    {"id": "UA", "label": "US shoppers", "type": "actor", "cell": [0, 0]},
+    {"id": "EA", "label": "EU shoppers", "type": "actor", "cell": [0, 2]},
+    {"id": "USAPI", "label": "Booking API", "sub": "us-east", "cell": [1, 0], "zone": "us"},
+    {"id": "USDB", "label": "Seats DB", "sub": "us-east primary", "type": "db", "cell": [2, 0], "zone": "us"},
+    {"id": "EUAPI", "label": "Booking API", "sub": "eu-west", "cell": [1, 2], "zone": "eu"},
+    {"id": "EUDB", "label": "Seats DB", "sub": "eu-west primary", "type": "db", "cell": [2, 2], "zone": "eu"},
+    {"id": "LEDGER", "label": "Seat ledger", "sub": "Raft, 3 zones", "type": "db", "cell": [3, 1]},
+    {"id": "PAY", "label": "Payment provider", "sub": "external", "type": "ext", "cell": [3, 0]}
+  ],
+  "edges": [
+    {"id": "ua_us", "from": "UA", "to": "USAPI", "label": "HTTPS"},
+    {"id": "ea_eu", "from": "EA", "to": "EUAPI", "label": "HTTPS"},
+    {"id": "us_db", "from": "USAPI", "to": "USDB", "label": "SQL"},
+    {"id": "eu_db", "from": "EUAPI", "to": "EUDB", "label": "SQL"},
+    {"id": "repl", "from": "USDB", "to": "EUDB", "label": "replication", "mode": "async"},
+    {"id": "us_led", "from": "USAPI", "to": "LEDGER", "label": "hold seat", "route": "vh"},
+    {"id": "eu_led", "from": "EUAPI", "to": "LEDGER", "label": "hold seat", "route": "vh"},
+    {"id": "us_pay", "from": "USDB", "to": "PAY", "label": "charge"}
+  ],
+  "metrics": [
+    {"id": "p99", "label": "booking p99", "unit": "ms", "source": "nfr", "target": "< 300"},
+    {"id": "oversold", "label": "seats sold twice", "source": "nfr", "target": "<= 0"},
+    {"id": "conflicts", "label": "write conflicts", "source": "derived"},
+    {"id": "eu", "label": "EU can book", "source": "derived"}
+  ],
+  "steps": [
+    {
+      "short": "Two regions", "chapter": "frame", "title": "Both regions take bookings",
+      "body": ["Each region has its own API and its own writable copy of the seats table, replicated to the other in the background. Shoppers book against the nearest region: about 40 ms instead of 120 ms across the ocean."],
+      "show": ["UA", "EA", "USAPI", "USDB", "EUAPI", "EUDB"], "focus": "USDB",
+      "flows": [{"edge": "repl", "packet": "heartbeat", "rate": 0.6}],
+      "metrics": {"p99": "90", "oversold": "0", "conflicts": "0", "eu": "yes"}
+    },
+    {
+      "short": "Partition", "chapter": "problem", "title": "The link breaks; both sell seat 7",
+      "body": ["The link between regions drops for 40 seconds. Ana in New York and Ben in Paris both see seat 7 free, and both regions accept the booking.",
+               "When the link heals, two rows claim seat 7. One customer has to be refunded."],
+      "callout": {"kind": "warn", "text": "Two writable copies of one seat are two truths. Last-write-wins quietly picks one and loses a paid booking."},
+      "changes": ["- Replication link down", "+ Seat 7 sold in both regions", "~ Seats sold twice 0 -> 1"],
+      "show": ["UA", "EA", "USAPI", "USDB", "EUAPI", "EUDB"], "focus": "EUDB",
+      "cut": ["repl"],
+      "state": {"USDB": "degraded", "EUDB": "degraded"},
+      "flows": [{"edge": "ua_us", "packet": "req"}, {"edge": "us_db", "packet": "req"},
+                {"edge": "ea_eu", "packet": "req"}, {"edge": "eu_db", "packet": "req"}],
+      "panels": [{"type": "timeline", "title": "What happened", "header": true,
+                  "rows": [["time", "US (Ana)", "EU (Ben)"], ["12:00:01", "reads seat 7: free", ""], ["12:00:01", "", "reads seat 7: free"],
+                           ["12:00:02", "writes seat 7: Ana", ""], ["12:00:02", "", "writes seat 7: Ben"]]}],
+      "metrics": {"oversold": "1", "conflicts": "1"},
+      "breach": ["conflicts"]
+    },
+    {
+      "short": "EU lost", "chapter": "case", "title": "Case: the EU region goes dark",
+      "body": ["The other failure: the whole EU region is lost. EU shoppers fail over to the US, but seats sold in the EU in the last few seconds never replicated."],
+      "changes": ["- EU region down", "~ EU can book yes -> no", "~ p99 90 -> 140 ms for rerouted users"],
+      "show": ["UA", "EA", "USAPI", "USDB", "EUAPI", "EUDB"], "focus": "USAPI",
+      "zone_state": {"eu": "down"},
+      "state": {"EUAPI": "down", "EUDB": "down"},
+      "flows": [{"edge": "ea_eu", "packet": "fail", "rate": 2}, {"edge": "ua_us", "packet": "req", "rate": 2}],
+      "metrics": {"p99": "140", "eu": "no"}
+    },
+    {
+      "short": "Ledger", "chapter": "fix", "title": "One ledger decides who holds a seat",
+      "body": ["Seats get one owner: a small ledger that both APIs ask to hold a seat before taking payment. First version: three nodes, all in the US."],
+      "callout": {"kind": "tip", "text": "Keep the ledger tiny: seat id, holder, expiry. Everything else stays regional."},
+      "changes": ["+ Seat ledger (holds expire in 10 min)", "- Seat writes replicated between regions", "~ Seats sold twice 1 -> 0"],
+      "show": ["UA", "EA", "USAPI", "USDB", "EUAPI", "EUDB", "LEDGER"], "focus": "LEDGER",
+      "cells": {"LEDGER": [3, 2]},
+      "hide_edges": ["repl"],
+      "state": {"LEDGER": "new"},
+      "overlays": [{"on": "LEDGER", "label": "US only for now"}],
+      "flows": [{"edge": "us_led", "packet": "req"}, {"edge": "eu_led", "packet": "req"}, {"edge": "eu_led", "packet": "res"}],
+      "metrics": {"p99": "210", "oversold": "0", "conflicts": "0", "eu": "yes"}
+    },
+    {
+      "short": "Spread", "chapter": "fix", "title": "Spread the ledger so no region owns it",
+      "body": ["Move to five ledger nodes: two in the US, two in the EU and a tie-breaker in a third region. Losing a whole region still leaves a majority, so booking continues everywhere else."],
+      "callout": {"kind": "insight", "text": "The price is one cross-ocean round trip per hold: about 120 ms added to every booking, paid on purpose."},
+      "changes": ["~ Ledger: 3 US nodes -> 2 + 2 + 1 across regions", "+ Payment after the hold", "~ p99 210 -> 260 ms"],
+      "show": ["UA", "EA", "USAPI", "USDB", "EUAPI", "EUDB", "LEDGER", "PAY"], "focus": "LEDGER", "final": true,
+      "hide_edges": ["repl"],
+      "flows": [{"edge": "us_led", "packet": "req"}, {"edge": "eu_led", "packet": "req"}, {"edge": "us_pay", "packet": "async", "rate": 0.5}],
+      "panels": [{"type": "note", "title": "Why 5 and not 4", "text": "Four nodes need 3 votes and survive only one failure, like three nodes do. Five survive two."}],
+      "metrics": {"p99": "260"}
+    },
+    {
+      "short": "Paused", "chapter": "case", "title": "Case: the ledger leader pauses",
+      "body": ["The ledger leader stalls for a second in a garbage-collection pause. The others elect a new leader; holds wait for about a second and the APIs retry with backoff."],
+      "changes": ["~ Ledger leader paused ~1 s", "~ p99 260 -> 1,200 ms during the election", "+ Retries with backoff and jitter"],
+      "show": ["UA", "EA", "USAPI", "USDB", "EUAPI", "EUDB", "LEDGER", "PAY"], "focus": "LEDGER",
+      "hide_edges": ["repl"],
+      "state": {"LEDGER": "degraded"},
+      "overlays": [{"on": "LEDGER", "label": "! election ~1 s"}],
+      "flows": [{"edge": "us_led", "packet": "retry"}, {"edge": "eu_led", "packet": "retry"}],
+      "metrics": {"p99": "1,200"}
+    },
+    {
+      "short": "Recap", "chapter": "recap", "title": "Consistent seats, at a price",
+      "body": ["Regional APIs and data for speed; one replicated ledger for the only fact that must never fork: who holds seat 7. Bookings cost one cross-ocean round trip; a region can be lost without overselling."],
+      "show": ["UA", "EA", "USAPI", "USDB", "EUAPI", "EUDB", "LEDGER", "PAY"],
+      "hide_edges": ["repl"],
+      "metrics": {"p99": "260"}
+    }
+  ]
+}

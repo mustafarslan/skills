@@ -1,0 +1,8 @@
+schema_version: "1.1"
+name: walkthrough-url-shortener
+expected_outcome: |
+  The design doc as in url-shortener-capacity, plus docs/design/url-shortener.steps.json and the
+  page render_walkthrough.py builds from it (docs/design/url-shortener.walkthrough.html), made
+  after the design gate passed. The steps tell the design in order (brief, numbers, draft, what
+  breaks, fixes, one failure walked, recap), carry the calculator's numbers, and end on the doc's
+  own diagram and trade-off table.

@@ -58,6 +58,7 @@ every time: LLM judges favour longer answers, and that case rewards restraint.
 | Phase 4 build or buy | building commodity components | `webhook-delivery-platform`, `expense-tool-small-team` | - |
 | Phase 6 skew and cascades | right on average, wrong on the whale | `chat-storage-hot-partition`, `flash-sale-inventory` | numeric RPO/RTO |
 | Phase 7 cross-cutting | tenant isolation and deletion gaps | `b2b-saas-tenant-deletion` | - |
+| `--walkthrough` | a walkthrough that drifts from the doc, invents numbers or skips the failure | `walkthrough-url-shortener` | `render_walkthrough.py` (final step = Mermaid, `calc:` metrics, layout) |
 | AI pack | RAG without permissions, sizing or evals | `rag-support-assistant` | - |
 | Client pack | offline sync and version skew ignored | `offline-first-field-app` | - |
 | Brownfield | big-bang rewrites | `monolith-split-brownfield` | - |
@@ -101,6 +102,7 @@ optimizer, or by asking a fresh session which skill each query would load.
 | M4 | agy quota or auth failure | says which failure; never presents a failed review as clean |
 | M5 | `--html` | renders the diagram; no external fetches |
 | M6 | Phase loop-back | give a fact that invalidates phase 4 mid-design; it says "back to phase N" |
+| M7 | `--walkthrough` page | open `<slug>.walkthrough.html?step=N&theme=light` and `&theme=dark` and `&motion=off`: packets move, chips flash on change, ←/→, R, Space and `#step-N` work, print preview lists every step, no network requests |
 
 ## Ablation and pruning
 

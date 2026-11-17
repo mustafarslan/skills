@@ -1,0 +1,158 @@
+{
+  "title": "URL shortener",
+  "summary": "From a one-line brief to 11,458 redirects a second under 50 ms, step by step.",
+  "doc": "url-shortener.md",
+  "calc": "url-shortener.calc.json",
+  "grid": {"cols": 5, "rows": 3},
+  "zones": [{"id": "region", "label": "One region, 3 zones"}],
+  "nodes": [
+    {"id": "C", "label": "Client", "sub": "browser, app", "type": "actor", "cell": [0, 1]},
+    {"id": "LB", "label": "Load balancer", "sub": "L7, TLS", "cell": [1, 1], "zone": "region"},
+    {"id": "API", "label": "Redirect API", "sub": "stateless", "cell": [2, 1], "zone": "region"},
+    {"id": "R", "label": "Redis cache", "sub": "cache-aside", "type": "cache", "cell": [3, 0], "zone": "region"},
+    {"id": "KV", "label": "Key-value store", "sub": "hash(code)", "type": "db", "cell": [3, 1], "zone": "region"},
+    {"id": "IDS", "label": "ID allocator", "sub": "blocks of 1,000", "cell": [2, 2], "zone": "region"},
+    {"id": "Q", "label": "Click stream", "sub": "ClickEvent", "type": "queue", "cell": [3, 2], "zone": "region"},
+    {"id": "AN", "label": "Click counter", "sub": "per link", "cell": [4, 2], "zone": "region"}
+  ],
+  "edges": [
+    {"id": "c_lb", "from": "C", "to": "LB", "label": "HTTPS"},
+    {"id": "lb_api", "from": "LB", "to": "API", "label": "HTTP"},
+    {"id": "api_r", "from": "API", "to": "R", "label": "GET/SET", "route": "vh"},
+    {"id": "api_kv", "from": "API", "to": "KV", "label": "get by code"},
+    {"id": "api_ids", "from": "API", "to": "IDS", "label": "id block"},
+    {"id": "api_q", "from": "API", "to": "Q", "label": "ClickEvent", "mode": "async", "route": "vh"},
+    {"id": "q_an", "from": "Q", "to": "AN", "mode": "async"}
+  ],
+  "metrics": [
+    {"id": "p99", "label": "p99 redirect", "unit": "ms", "source": "nfr", "target": "< 50"},
+    {"id": "peak", "label": "peak redirects", "unit": "/s", "source": "calc:traffic.peak_read_qps"},
+    {"id": "store", "label": "store reads", "unit": "/s", "source": "derived"},
+    {"id": "pool", "label": "store conns busy", "source": "derived", "target": "< 80"},
+    {"id": "lost", "label": "links lost", "source": "nfr", "target": "<= 0"}
+  ],
+  "steps": [
+    {
+      "short": "Brief", "chapter": "frame", "title": "Short links, fast redirects",
+      "body": ["Create a short code for a long URL, and send anyone who opens the code to the long URL. 100M new links a month; about 100 redirects per link created.",
+               "What matters most: a redirect is on the critical path of someone's click, so p99 must stay under 50 ms, and a link once created is never lost."],
+      "callout": {"kind": "insight", "text": "Two numbers decide this design: reads are 100x writes, and the redirect is user-facing. Everything else follows from them."},
+      "show": ["C", "API"], "focus": "API",
+      "metrics": {"lost": "0"},
+      "doc_anchor": "#requirements"
+    },
+    {
+      "short": "Numbers", "chapter": "numbers", "title": "Put numbers on it",
+      "body": ["The calculator turns 3.3M creates and 330M redirects a day into a peak of about 11,458 redirects a second and 115 creates a second, with a peak multiplier of 3 (assumed).",
+               "Five years of links is 2.7 TiB, 8.2 TiB with three copies: too much for one comfortable machine, small enough for a modest cluster."],
+      "panels": [{"type": "table", "title": "capacity_calc.py", "header": true,
+                  "rows": [["", "average", "peak"], ["redirects/s", "3,819", "11,458"], ["creates/s", "38", "115"], ["storage (5 y, x3)", "", "8.2 TiB"]]}],
+      "changes": ["+ 11,458 redirects/s at peak", "+ 115 creates/s at peak", "+ 8.2 TiB over 5 years"],
+      "show": ["C", "API"],
+      "metrics": {"peak": "11,458"},
+      "doc_anchor": "#estimation"
+    },
+    {
+      "short": "Draft", "chapter": "draft", "title": "The simplest thing that works",
+      "body": ["Stateless API servers behind a load balancer, and one table keyed by code. A redirect is one lookup by primary key.",
+               "Watch a request go in and the answer come back: about 38 ms at p99 on a quiet day."],
+      "changes": ["+ Load balancer", "+ Key-value store, keyed by code", "~ Every redirect reads the store"],
+      "show": ["C", "LB", "API", "KV"], "focus": "KV",
+      "flows": [{"edge": "c_lb", "packet": "req", "rate": 2}, {"edge": "lb_api", "packet": "req", "rate": 2},
+                {"edge": "api_kv", "packet": "req", "rate": 2}, {"edge": "api_kv", "packet": "res", "rate": 2}],
+      "metrics": {"p99": "38", "store": "11,458", "pool": "23"}
+    },
+    {
+      "short": "What breaks", "chapter": "problem", "title": "Every click lands on the store",
+      "body": ["At peak, all 11,458 redirects a second go to the store, and a viral link sends thousands of them to one partition.",
+               "The store runs hot, its queue grows, and the p99 climbs past the 50 ms target."],
+      "callout": {"kind": "warn", "text": "The store is the first thing to break at today's numbers: it does the same lookup for the same hot codes thousands of times a second."},
+      "changes": ["~ Store 85% busy at peak", "~ p99 38 -> 120 ms", "- Target missed"],
+      "show": ["C", "LB", "API", "KV"], "focus": "KV",
+      "overlays": [{"on": "KV", "gauge": 85, "label": "! 11,458 reads/s"}],
+      "flows": [{"edge": "lb_api", "packet": "req", "rate": 5}, {"edge": "api_kv", "packet": "req", "rate": 5, "held": 14}],
+      "metrics": {"p99": "120", "pool": "61"}
+    },
+    {
+      "short": "Cache", "chapter": "fix", "title": "Reads dominate: cache them",
+      "body": ["Put Redis in front of the store, cache-aside: check Redis, fall back to the store, then fill Redis. The hot set is at most 31 GiB, so one node and a replica hold it.",
+               "About 90% of redirects now stop at Redis in about a millisecond. Cache 'no such code' too, for 30 s, or bots asking for random codes reach the store every time."],
+      "callout": {"kind": "tip", "text": "The cost is staleness: a taken-down link can still redirect for up to the 24 h TTL. Delete the key on takedown."},
+      "changes": ["+ Redis cache-aside, TTL 24 h", "+ Negative cache, 30 s", "~ Store reads 11,458 -> 1,146 /s", "~ p99 120 -> 9 ms"],
+      "show": ["C", "LB", "API", "R", "KV"], "focus": "R",
+      "state": {"R": "new"},
+      "overlays": [{"on": "KV", "gauge": 12}],
+      "flows": [{"edge": "lb_api", "packet": "req", "rate": 4}, {"edge": "api_r", "packet": "req", "rate": 4},
+                {"edge": "api_r", "packet": "res", "rate": 4}, {"edge": "api_kv", "packet": "req", "rate": 0.5}],
+      "metrics": {"p99": "9", "store": "1,146", "pool": "3"},
+      "decision": "Redis cache-aside in front of the store",
+      "doc_anchor": "#read-path"
+    },
+    {
+      "short": "Codes", "chapter": "fix", "title": "Where do codes come from?",
+      "body": ["A hash of the URL, cut to 7 characters, collides after about two million links. Instead, the API takes ids from the allocator in blocks of 1,000 and encodes each in base 62.",
+               "One allocator call per 1,000 creates; no collision checks. Ids are scrambled first, so codes cannot be counted."],
+      "changes": ["+ ID allocator, blocks of 1,000", "- Collision checks", "~ Codes: scrambled id in base 62"],
+      "show": ["C", "LB", "API", "R", "KV", "IDS"], "focus": "IDS",
+      "state": {"IDS": "new"},
+      "flows": [{"edge": "api_ids", "packet": "req", "rate": 0.4}, {"edge": "api_ids", "packet": "res", "rate": 0.4}],
+      "decision": "Id blocks from an allocator, base 62",
+      "doc_anchor": "#code-generation"
+    },
+    {
+      "short": "Clicks", "chapter": "fix", "title": "Count clicks without slowing them",
+      "body": ["Answer with a 302, so every click reaches us and can be counted, and a takedown works at once. The API publishes a ClickEvent and moves on; a counter consumes the stream.",
+               "This is the settled design: it is the diagram in the design doc."],
+      "changes": ["+ Click stream (async)", "+ Click counter", "~ Redirects answer 302, not 301"],
+      "show": ["C", "LB", "API", "R", "KV", "IDS", "Q", "AN"], "focus": "Q", "final": true,
+      "flows": [{"edge": "c_lb", "packet": "req", "rate": 2}, {"edge": "lb_api", "packet": "req", "rate": 2},
+                {"edge": "api_r", "packet": "req", "rate": 2}, {"edge": "api_q", "packet": "async", "rate": 2},
+                {"edge": "q_an", "packet": "async", "rate": 2}],
+      "decision": "302 redirect instead of 301",
+      "doc_anchor": "#architecture"
+    },
+    {
+      "short": "Cache lost", "chapter": "case", "title": "Case: the Redis node dies",
+      "body": ["Redis fails. All 11,458 reads a second fall through to the store; its 23-connection budget is gone in a moment and calls start timing out.",
+               "Clients retry three times, so the store sees four times the load and cannot recover on its own."],
+      "callout": {"kind": "warn", "text": "A cache you cannot lose is a database you did not size. Plan for the cold start, not just the warm day."},
+      "changes": ["- Redis down", "~ Store reads 1,146 -> 45,832 /s with retries", "~ Pool 3 -> 100 busy", "~ p99 9 -> 2,300 ms"],
+      "show": ["C", "LB", "API", "R", "KV", "IDS", "Q", "AN"], "focus": "KV",
+      "state": {"R": "down"},
+      "overlays": [{"on": "KV", "gauge": 100, "label": "! pool 100/100"}],
+      "flows": [{"edge": "lb_api", "packet": "req", "rate": 4}, {"edge": "api_kv", "packet": "fail", "rate": 3},
+                {"edge": "api_kv", "packet": "retry", "rate": 3}],
+      "panels": [{"type": "chart", "title": "store latency vs load", "x_label": "load", "y_label": "latency",
+                  "points": [[0, 2], [40, 3], [60, 4], [75, 7], [85, 14], [92, 40], [96, 120]], "mark": 6, "mark_label": "now"}],
+      "metrics": {"p99": "2,300", "store": "45,832", "pool": "100"}
+    },
+    {
+      "short": "Defence", "chapter": "fix", "title": "Coalesce, time out, promote",
+      "body": ["Three defences: one store read per hot code at a time (request coalescing), a 200 ms store timeout with a 10% retry budget, and a warm Redis replica promoted within 30 s.",
+               "The store now sees one read per distinct code while the replica takes over: busy, but inside its budget."],
+      "changes": ["+ Request coalescing per code", "+ 200 ms timeout, 10% retry budget", "~ Replica promoted in 30 s", "~ p99 2,300 -> 45 ms"],
+      "show": ["C", "LB", "API", "R", "KV", "IDS", "Q", "AN"], "focus": "R",
+      "overlays": [{"on": "KV", "gauge": 40}, {"on": "R", "label": "promoted replica"}],
+      "flows": [{"edge": "api_r", "packet": "req", "rate": 3}, {"edge": "api_kv", "packet": "req", "rate": 1}],
+      "metrics": {"p99": "45", "store": "2,100", "pool": "18"},
+      "doc_anchor": "#consistency-and-failure-modes"
+    },
+    {
+      "short": "10x", "chapter": "scale", "title": "At 10x: what changes first",
+      "body": ["At 10x the peak is about 114,583 redirects a second. The hot set outgrows one Redis node first: shard it three ways. The store adds partitions; codes hash evenly, so no partition runs hot.",
+               "At 100x, regional caches and read replicas, migrated with dual reads."],
+      "changes": ["~ Peak 11,458 -> 114,583 /s", "~ Redis: 1 node -> 3 shards", "+ Store partitions"],
+      "show": ["C", "LB", "API", "R", "KV", "IDS", "Q", "AN"], "focus": "R", "scale": 10,
+      "overlays": [{"on": "R", "label": "3 shards"}],
+      "flows": [{"edge": "lb_api", "packet": "req", "rate": 6}, {"edge": "api_r", "packet": "req", "rate": 6}],
+      "metrics": {"peak": "114.6k", "p99": "12"},
+      "doc_anchor": "#evolution"
+    },
+    {
+      "short": "Recap", "chapter": "recap", "title": "The finished design",
+      "body": ["Every box earned its place with a number. The table is the doc's trade-off table: what each decision solves, what it costs, and the signal that should make you change it."],
+      "show": ["C", "LB", "API", "R", "KV", "IDS", "Q", "AN"],
+      "metrics": {"p99": "9", "peak": "11,458", "store": "1,146", "pool": "3"}
+    }
+  ]
+}

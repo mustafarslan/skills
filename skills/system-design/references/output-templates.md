@@ -6,6 +6,8 @@
 - [ADR](#adr)
 - [Mermaid diagrams](#mermaid-diagrams)
 - [HTML+SVG diagram (--html)](#htmlsvg-diagram---html)
+- [Walk it: step-by-step explanations](#walk-it-step-by-step-explanations)
+- [Animated walkthrough (--walkthrough)](#animated-walkthrough---walkthrough)
 - [Review report](#review-report)
 
 ## Design document
@@ -40,10 +42,11 @@ Core endpoints/messages; entities, keys, indexes, partitioning; concurrency cont
 ## Deep dives
 ### <Hardest problem 1>
 ### <Hardest problem 2>
+(each: the mechanism, then a "Walk it" list - see below)
 
 ## Consistency and failure modes
-Per data type: consistency model and what users see. At least one cascade walked end to end,
-degradation modes, DR tier with RPO/RTO.
+Per data type: consistency model and what users see. At least one cascade walked end to end as a
+"Walk it" list, degradation modes, DR tier with RPO/RTO.
 
 ## Security, operations and cost
 Trust boundaries and top threats; tenancy; data lifecycle; observability; rollout; cost estimate.
@@ -132,6 +135,29 @@ Only when `--html` is given or the user asks for a styled diagram:
 - One self-contained file next to the design doc (`docs/design/<slug>.html`), inline SVG.
 - The Mermaid diagram in the Markdown stays the source of truth and stays unstyled (fixed colours
   break GitHub's dark mode); the SVG mirrors it node for node and edge for edge.
+
+## Walk it: step-by-step explanations
+A deep dive or a cascade is easiest to check when it is told one step at a time, each step
+carrying the number it moves. Under the mechanism, add a numbered list:
+
+```markdown
+**Walk it.**
+1. **Draft:** every redirect reads the store - 11,458 reads/s at peak, p99 38 ms.
+2. **What breaks:** a viral code sends thousands of reads/s to one partition - store 85% busy, p99 38 -> 120 ms.
+3. **Fix:** Redis cache-aside, TTL 24 h - store reads 11,458 -> 1,146 /s, p99 120 -> 9 ms.
+4. **What it costs:** a taken-down link redirects for up to 24 h unless the key is deleted.
+5. **Case - Redis dies:** 11,458 reads/s fall through, pool 23 -> 100% busy, retries x3 -> 4x load.
+6. **Defence:** coalescing per code, 200 ms timeout, 10% retry budget, replica promoted in 30 s.
+```
+
+Each step: a bold one-word label, one sentence, and the `before -> after` number. Every fix is
+followed by what it costs. The same steps become the `--walkthrough` page.
+
+## Animated walkthrough (--walkthrough)
+`references/walkthrough.md`: a steps file next to the doc, rendered by
+`scripts/render_walkthrough.py` into `docs/design/<slug>.walkthrough.html` (one offline file).
+It is built from the finished doc in phase 10 and checked against it; the doc stays the source of
+truth.
 
 ## Review report
 Review mode output:
