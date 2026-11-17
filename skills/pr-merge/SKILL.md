@@ -1,8 +1,7 @@
 ---
 name: pr-merge
-description: Take an approved GitHub PR the rest of the way — add it to the base branch's merge queue and watch it until it merges, or, on a base with no queue, rebase, wait for CI and merge with the repo's method — never bypassing branch protection. Slash command only (/pr-merge [PR]).
+description: Take an approved GitHub PR the rest of the way — add it to the base branch's merge queue and watch it until it merges, or, on a base with no queue, rebase, wait for CI and merge with the repo's method — never bypassing branch protection. Use when the user runs /pr-merge [PR] or asks to merge an approved PR, and when a pr-pulse merge job says to run /pr-merge.
 argument-hint: "[PR number or URL; default: the current branch's PR]"
-disable-model-invocation: true
 allowed-tools: Bash, Read, Skill, AskUserQuestion
 ---
 

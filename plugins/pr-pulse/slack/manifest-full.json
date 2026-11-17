@@ -1,0 +1,33 @@
+{
+  "display_information": {
+    "name": "pr-pulse",
+    "description": "Announces pull requests, picks up PRs shared for review, and posts review verdicts for one teammate.",
+    "background_color": "#2c2d30"
+  },
+  "features": {
+    "bot_user": {
+      "display_name": "pr-pulse",
+      "always_online": false
+    }
+  },
+  "oauth_config": {
+    "scopes": {
+      "bot": [
+        "chat:write",
+        "chat:write.public",
+        "channels:read",
+        "groups:read",
+        "channels:history",
+        "groups:history",
+        "users:read",
+        "users:read.email",
+        "reactions:write"
+      ]
+    }
+  },
+  "settings": {
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": false,
+    "token_rotation_enabled": false
+  }
+}

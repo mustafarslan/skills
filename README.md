@@ -21,6 +21,7 @@
 | [spm](skills/spm/SKILL.md) | Helps a product manager write requirements engineers can build and test (epic, stories, acceptance criteria, worked examples) without saying how to build it. Enforced by a checker, a fail-closed write hook and red-team passes. |
 | [park](skills/park/SKILL.md) | **Beta, macOS + Terminal.app only.** At the end of the day, `/park` snapshots every Claude Code session on your Mac (folder, branch, uncommitted work as a patch, the watchers, background shells and crons running inside it), stops them all and quits Terminal; `/park --resume` brings each conversation back in its own window and restarts what was running. Never commits, stashes or resets. |
 | [system-design](skills/system-design/SKILL.md) | Designs, reviews and stress-tests systems at a staff-engineer bar: locks requirements and non-goals first, runs the capacity math in a script, defaults to the boring design, pushes back on steers that break a requirement, walks failure cascades, and ends with a trade-off table whose every row says when to change the decision. Modes for real designs (design doc + ADRs), mock interviews (as candidate or interviewer), reviews and deep dives. Its calculator also sizes restore time against RTO, LLM serving (tokens, cost, KV cache), stream partitions, cost from your prices, and the 10x/100x path; its gate rejects vague, strawman or already-fired triggers. `--walkthrough` adds an animated, step-by-step page of the design (brief, numbers, draft, what breaks, each fix, one failure walked hop by hop, trade-offs), checked against the doc and the calculator. Ships with a 19-case eval suite. |
+| [pr-pulse](plugins/pr-pulse/README.md) | **A separate plugin, macOS only.** Runs your PR loop across all your Claude Code sessions and repos: announces new PRs in Slack, runs `/pr-review`, `/pr-feedback` and `/pr-merge` in idle sessions or background workers, asks your decisions from macOS notifications, and posts nothing in your name until you have written your own top lines. |
 
 The PR skills and `bugfix` need the [GitHub CLI](https://cli.github.com/) (`gh`), authenticated. `bugfix` reads the issue from whichever tracker is connected to Claude Code (Jira, Linear, and so on), falling back to GitHub Issues.
 
@@ -44,6 +45,8 @@ The git skills (`rebase`, `commit`, `pr-merge`, `pr-upsert`) work in any reposit
 
 `park` needs macOS, Terminal.app, `python3` and `git`. The first `/park` asks macOS to let Claude control Terminal (System Settings → Privacy & Security → Automation). Its store and patches live in `~/.claude/park/` and are kept 30 days. What comes back and what doesn't: [skills/park/references/usage.md](skills/park/references/usage.md).
 
+`pr-pulse` is its own plugin in [plugins/pr-pulse/](plugins/pr-pulse/), installed separately (below). It needs macOS, `gh` (logged in), `jq`, `curl` and `python3`, and runs a background service under launchd; Slack is optional. It hands each job to this repo's `/pr-review`, `/pr-feedback` or `/pr-merge` (your own versions win), and `pr-pulse doctor` names any that are missing. Setup with `/pr-pulse:init`: [plugins/pr-pulse/README.md](plugins/pr-pulse/README.md).
+
 `spm` needs `python3` (3.9+) and its `spm-red-team` agent. The word trigger ("spm" in a prompt) is opt-in, because it is a prompt hook: [skills/spm/references/install.md](skills/spm/references/install.md).
 
 ## Install
@@ -53,6 +56,7 @@ Plugin marketplace (all skills and agents):
 ```
 /plugin marketplace add mustafarslan/skills
 /plugin install skills@mustafarslan-skills
+/plugin install pr-pulse@mustafarslan-skills   # optional, macOS: the pr-pulse plugin
 ```
 
 Or copy one skill:
@@ -90,7 +94,7 @@ Invoke with a slash command, or just ask ("review PR 42", "address the comments 
 | `/spm` | Write product requirements for engineering |
 | `/system-design <problem>` | Design a system (`--interview candidate\|interviewer`, `--review <doc>`, `--deep-dive <topic>`, `--html`, `--walkthrough`) |
 
-`bugfix`, `pr-merge` and `pr-upsert` only run when you type the command — they push code, open or merge PRs, so Claude never loads them on its own. Optional flags add second opinions and skip silently when the tool isn't installed: `--agy` and `--boost` challenge the root cause (they need the [agy](skills/agy/SKILL.md) setup above), and `--codex` challenges the fix diff (it needs the `openai-codex` plugin).
+`bugfix` and `pr-upsert` only run when you type the command — they push code and open PRs, so Claude never loads them on its own. `pr-merge` can also be started by Claude (pr-pulse's merge jobs use it); it never bypasses branch protection. Optional flags add second opinions and skip silently when the tool isn't installed: `--agy` and `--boost` challenge the root cause (they need the [agy](skills/agy/SKILL.md) setup above), and `--codex` challenges the fix diff (it needs the `openai-codex` plugin).
 
 Installed as a plugin, the commands are namespaced: `/skills:pr-review`, `/skills:pr-feedback`, `/skills:bugfix`, `/skills:agy`, `/skills:retro`, `/skills:pr-merge`, and so on.
 

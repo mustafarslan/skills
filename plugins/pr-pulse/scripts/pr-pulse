@@ -1,0 +1,1612 @@
+#!/usr/bin/env python3
+"""pr-pulse CLI — the one way sessions, commands and hooks talk to the store.
+
+  pr-pulse status                       sessions, mapped repos, tracked PRs, queue
+  pr-pulse map                          suggest a repo -> PR-session mapping from live sessions
+  pr-pulse map set <slug|path> [--session <sid|name>] [--announce|--no-announce]
+  pr-pulse map rm <slug>
+  pr-pulse tracks <pr number|url> [--repo <slug>]   exit 0 if the daemon tracks it
+  pr-pulse stop [--keep-workers]        shut EVERYTHING down, one step: daemon (stays off after
+                                        reboot), inbox watchers, pr-pulse's background sessions,
+                                        announcements. Nothing is uninstalled.
+  pr-pulse start                        bring it all back after stop
+  pr-pulse pause | resume               lighter: keep watching, hand nothing out
+  pr-pulse announce <pr url> < text     save a PR announcement; the daemon posts it (again for a
+                                        posted PR: the daemon edits that Slack message)
+  pr-pulse announce list | retry <url> | drop <url>   PRs not announced / post the saved text
+                                        again / don't announce it
+  pr-pulse rules [repo] | list          a repo's PR rules (settings + plain rules) / all repos
+  pr-pulse rules set|unset <repo> <key> [value]   per-repo setting: auto_review on|off,
+                                        merge auto|ask|never, feedback_rounds, bot_rounds,
+                                        review_bots, ignore_authors
+  pr-pulse rules add <repo> <sentence> | rm <repo> <n> | clear <repo>
+  pr-pulse auto-review off [--keep-running] | on | status
+                                        stop / restart reviewing other people's PRs on its own
+                                        (your own PRs carry on); off also stops pr-pulse's
+                                        background review sessions unless --keep-running
+  pr-pulse decisions <pr> | forget <question id>   answers later jobs on a PR are told about /
+                                        stop carrying a mistaken one
+  pr-pulse tick [--dry-run]             run one daemon tick now
+  pr-pulse prune [--days N]             delete finished history older than N days (default:
+                                        retention_days, 30); the daemon does this daily
+  pr-pulse daemon install|uninstall|status
+
+  Setup (what /pr-pulse:init drives):
+  pr-pulse doctor [--json]              what is set up and what is missing
+  pr-pulse deps [--install]             check jq, gh, alerter; --install adds alerter with brew
+  pr-pulse autoupdate [status] | on     Claude Code's auto-update for pr-pulse's marketplace
+  pr-pulse secret set bot-token|user-token|webhook --from-clipboard   save a secret, never printed
+                                               (user-token: post as you; turns post_as user on)
+  pr-pulse slack manifest-url announce|full|user   link that opens Slack's "create app" pre-filled
+  pr-pulse slack manifest announce|full|user --copy   put the manifest JSON on the clipboard
+  pr-pulse slack whoami | whoami-user | channels | whois <email> | test-post <channel id> [--as-me] | check <channel id>
+  pr-pulse config get [key] | set <key> <json value>
+
+  Sessions doing pr-pulse work (the session id comes from $CLAUDE_CODE_SESSION_ID):
+  pr-pulse join [--repo <slug>] [--for <session>[,<session>] | --general] | leave
+                                        take / stop taking PR work in this session; --for: only the
+                                        PRs those sessions opened (a plain re-join keeps it)
+  pr-pulse focus [list] | clear <session> | origin <pr> <session>   PR sessions and their pairs
+  pr-pulse watch                        the inbox watcher to run under the Monitor tool
+  pr-pulse spawn <slug>                 start a named background PR session for a repo
+  pr-pulse job list | show <id> | start <id> | beat <id> | wait-user <id> | done <id>
+  pr-pulse job fail <id> --why "<one line>"
+  pr-pulse outbox add --job <id> --kind <review|reply|comment> [--target "<where>"] < draft
+  pr-pulse outbox list | show [--job <id>] | lines <draft id> [--filled] < lines | propose <draft id> < lines | posted <id> | drop <id>
+  pr-pulse outbox decide <draft id> merge|re-review   answer a merge-check
+  pr-pulse ask --job <id> --question "<text>" --summary "<one line>" [--option A …] [--text]
+  pr-pulse ask --job <id> --json < payload.json    {question, summary, options, allow_text,
+                                        findings:[{severity, path, what, scope}]}
+                                        ask the user; shown as a notification with the findings
+                                        summary, the answer arrives on this session's inbox watcher
+  pr-pulse questions | answer <question id> <text>
+  pr-pulse pr release <url>             end a hold: automatic rounds and merges again
+  pr-pulse announces <dir>              exit 0 if that repo is mapped with announce on
+"""
+import json
+import os
+import plistlib
+import re
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+import current  # noqa: E402
+if __name__ == "__main__":
+    current.forward(__file__)   # any loaded copy runs the service's (current) copy instead
+import core  # noqa: E402
+import db    # noqa: E402
+
+LABEL = "local.pr-pulse"
+OLD_LABELS = ()   # earlier labels to migrate on `daemon install` / `start`
+PLIST = Path.home() / "Library" / "LaunchAgents" / f"{LABEL}.plist"
+LOG = db.HOME / "daemon.log"
+# The service and the CLI run from a fixed copy of the plugin, so a plugin update (which
+# installs into a new versioned folder) can't leave them on old code or a deleted path.
+APP = db.HOME / "app"
+APP_SKIP = {"tests", "__pycache__", ".DS_Store", "plan.md"}
+
+
+def plugin_version(root):
+    try:
+        return json.loads((Path(root) / ".claude-plugin" / "plugin.json").read_text()).get("version", "")
+    except (OSError, ValueError):
+        return ""
+
+
+def version_newer(a, b):
+    """Is semver a newer than b? Unparseable versions never count as newer."""
+    def parse(v):
+        try:
+            return tuple(int(x) for x in (v or "").split("-")[0].split("."))
+        except ValueError:
+            return None
+    pa, pb = parse(a), parse(b)
+    return bool(pa) and (not pb or pa > pb)
+
+
+PLUGIN_CACHE = Path.home() / ".claude" / "plugins" / "cache"
+
+
+def newest_installed():
+    """The pr-pulse Claude Code has installed (installed_plugins.json), or None."""
+    return current.installed_root()
+
+
+def sync_app(src=None):
+    """Copy a plugin folder (default: this one, HERE/..) to APP, atomically. Returns the version copied."""
+    return current.sync(Path(src) if src else HERE.parent)
+
+
+def die(msg, code=1):
+    print(f"pr-pulse: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def ago(ts):
+    if not ts:
+        return "never"
+    s = int(time.time() - float(ts))
+    if s < 90:
+        return f"{s}s ago"
+    if s < 5400:
+        return f"{s // 60}m ago"
+    return f"{s // 3600}h ago"
+
+
+def daemon_running():
+    out = core.run(["launchctl", "list", LABEL])
+    if not out:
+        return False, None
+    for line in out.splitlines():
+        if '"PID"' in line:
+            return True, line.split("=")[-1].strip(" ;")
+    return False, None
+
+
+# ---- commands -----------------------------------------------------------------------
+
+def cmd_status(con, args):
+    running, pid = daemon_running()
+    paused = db.get_setting(con, "paused", "0") == "1"
+    if db.get_setting(con, "stopped", "0") == "1":
+        print("pr-pulse is STOPPED (pr-pulse start / /pr-pulse:start brings it back)")
+    print(f"daemon: {'running (pid ' + pid + ')' if running else 'NOT running'}"
+          f"{'  · PAUSED (observe only)' if paused else ''}"
+          f"  · last tick {ago(db.get_setting(con, 'last_tick'))}")
+    import autoreview
+    print(autoreview.status_line(con))
+    stale = current.stale_sessions(con)
+    if stale:
+        print("NEEDS /reload-plugins (older pr-pulse loaded): "
+              + ", ".join(f"{n} ({v})" for n, v in stale))
+    repos = con.execute("SELECT * FROM repos ORDER BY slug").fetchall()
+    print(f"\nmapped repos ({len(repos)}):")
+    for r in repos:
+        s = con.execute("SELECT name FROM sessions WHERE sid=?", (r["pr_session"],)).fetchone()
+        print(f"  {r['slug']:<40} PR session: {(s['name'] if s else r['pr_session']) or '-'}"
+              f"{'  · announce' if r['announce'] else ''}")
+    if not repos:
+        print("  none yet — run /pr-pulse:map")
+    if con.execute("SELECT 1 FROM sessions WHERE registered=1").fetchone():
+        print("\nPR sessions:")
+        cmd_focus(con, ["list"])
+    live = con.execute("SELECT * FROM sessions WHERE status != 'gone' "
+                       "ORDER BY slug, name").fetchall()
+    print(f"\nlive sessions ({len(live)}):")
+    for s in live:
+        tag = " [registered]" if s["registered"] else (" [worker]" if s["spawned"] else "")
+        print(f"  {(s['name'] or s['sid'][:8]):<24} {s['status']:<8} "
+              f"{s['slug'] or '(no repo)'}{tag}")
+    prs = con.execute("SELECT * FROM prs WHERE state='OPEN' ORDER BY slug, n").fetchall()
+    print(f"\nopen PRs tracked ({len(prs)}):")
+    for p in prs:
+        print(f"  {p['slug']}#{p['n']:<6} {p['kind']:<6} {p['decision'] or '-':<18} {'HOLD ' if p['hold'] else ''}"
+              f"CI {p['ci']:<8} {(p['title'] or '')[:50]}")
+    stuck = con.execute("SELECT j.id, j.action, j.sid, s.name, s.spawned, p.slug, p.n FROM jobs j JOIN sessions s "
+                        "ON s.sid=j.sid LEFT JOIN prs p ON p.url=j.pr_url WHERE j.status IN "
+                        "('claimed','delivered') AND s.status='waiting'").fetchall()
+    waits = [s for s in live if s["status"] == "waiting"]
+    if waits:
+        print(f"\nSESSIONS WAITING FOR YOU ({len(waits)}): " + ", ".join(s["name"] or s["sid"][:8] for s in waits))
+    if stuck:
+        print(f"\nWAITING FOR YOUR APPROVAL ({len(stuck)}):")
+        for r in stuck:
+            how = f"claude attach {r['sid'][:8]}" if r["spawned"] else f"session {r['name']}"
+            print(f"  job {r['id']} {r['action']} {r['slug']}#{r['n']} → {how}")
+    counts = dict(con.execute("SELECT status, COUNT(*) FROM jobs GROUP BY status").fetchall())
+    drafts = con.execute("SELECT COUNT(*) FROM outbox WHERE status='pending'").fetchone()[0]
+    qs = con.execute("SELECT COUNT(*) FROM questions WHERE status IN ('pending','showing')").fetchone()[0]
+    print(f"\njobs: {json.dumps(counts) if counts else 'none'}  · drafts awaiting your lines: {drafts} · questions for you: {qs}")
+
+
+def cmd_map(con, args):
+    if args and args[0] == "set":
+        return map_set(con, args[1:])
+    if args and args[0] == "rm":
+        if len(args) < 2:
+            die("usage: pr-pulse map rm <slug>", 2)
+        n = con.execute("DELETE FROM repos WHERE slug=?", (args[1],)).rowcount
+        print(f"removed {args[1]}" if n else f"{args[1]} was not mapped")
+        return
+    sessions = core.list_sessions()
+    if sessions is not None:
+        core.sync_sessions(con, sessions)
+    sug = core.suggest_mapping(con)
+    if not sug:
+        print("No live sessions inside a GitHub repo, and nothing mapped yet.")
+        return
+    for g in sug:
+        state = "mapped" if g["mapped"] else "NOT mapped"
+        print(f"\n{g['slug']}  ({state})  root: {g['root'] or '?'}")
+        for s in g["sessions"]:
+            star = "→" if s["sid"] == g["suggested"] else " "
+            print(f"  {star} {(s['name'] or '(unnamed)'):<24} {s['status']:<8} "
+                  f"branch {s['branch'] or '-':<30} {s['sid']}")
+        if not g["sessions"]:
+            print("    no live session — `/pr-pulse:spawn " + g["slug"] + "` can start one")
+    print("\n→ = suggested PR session (registered > name has pr/review > idle > most recent).")
+
+
+def map_set(con, args):
+    if not args:
+        die("usage: pr-pulse map set <slug|path> [--session <sid|name>] [--announce]", 2)
+    target, session, announce = args[0], None, None
+    i = 1
+    while i < len(args):
+        if args[i] == "--session" and i + 1 < len(args):
+            session, i = args[i + 1], i + 2
+        elif args[i] == "--announce":
+            announce, i = 1, i + 1
+        elif args[i] == "--no-announce":
+            announce, i = 0, i + 1
+        else:
+            die(f"unknown argument {args[i]}", 2)
+    if os.path.isdir(target):
+        root, slug, _ = core.repo_of(os.path.abspath(target))
+        if not slug:
+            die(f"{target} is not a git repo with a GitHub origin")
+    else:
+        slug, root = target, None
+        row = con.execute("SELECT cwd FROM sessions WHERE slug=? AND cwd IS NOT NULL",
+                          (slug,)).fetchone()
+        if row:
+            root = core.repo_of(row["cwd"])[0]
+        if not root:
+            die(f"no live session in {slug}; pass the repo path instead")
+    sid = None
+    if session:
+        live = core.list_sessions()
+        if live is not None:
+            core.sync_sessions(con, live)
+        row = con.execute("SELECT sid FROM sessions WHERE (sid=? OR name=?) AND status!='gone' "
+                          "ORDER BY seen_at DESC", (session, session)).fetchone()
+        if not row:
+            die(f"no live session named or with id {session}")
+        sid = row["sid"]
+    con.execute(
+        "INSERT INTO repos(path, slug, announce, pr_session, added_at) VALUES(?,?,?,?,?) "
+        "ON CONFLICT(path) DO UPDATE SET slug=excluded.slug, "
+        "announce=COALESCE(?, repos.announce), pr_session=COALESCE(?, repos.pr_session)",
+        (root, slug, announce or 0, sid, time.time(), announce, sid))
+    db.event(con, "map.set", {"slug": slug, "root": root, "session": sid, "announce": announce})
+    print(f"mapped {slug} ({root})" + (f", PR session {session}" if sid else ""))
+
+
+def cmd_tracks(con, args):
+    if not args:
+        die("usage: pr-pulse tracks <pr number|url> [--repo <slug>]", 2)
+    ref = args[0]
+    running, _ = daemon_running()
+    if not running or db.get_setting(con, "paused", "0") == "1":
+        sys.exit(1)   # paused or stopped: pr-pulse is not handling anything, let others watch
+    if ref.startswith("https://"):
+        row = con.execute("SELECT 1 FROM prs WHERE url=? AND state='OPEN'", (ref,)).fetchone()
+    else:
+        slug = args[2] if len(args) > 2 and args[1] == "--repo" else None
+        if slug is None:
+            root, slug, _ = core.repo_of(os.getcwd())
+        row = con.execute("SELECT 1 FROM prs WHERE slug=? AND n=? AND state='OPEN'",
+                          (slug, int(ref))).fetchone() if slug else None
+    sys.exit(0 if row else 1)
+
+
+def cmd_auto_review(con, args):
+    import autoreview
+    sub = args[0] if args else "status"
+    if sub == "off":
+        print("\n".join(autoreview.turn_off(con, stop_workers="--keep-running" not in args)))
+    elif sub == "on":
+        print("\n".join(autoreview.turn_on(con)))
+    elif sub == "status":
+        print(autoreview.status_line(con))
+    else:
+        die("usage: pr-pulse auto-review on | off [--keep-running] | status", 2)
+
+
+def cmd_pause(con, args, value):
+    db.set_setting(con, "paused", value)
+    db.event(con, "paused" if value == "1" else "resumed")
+    print("pr-pulse is PAUSED: the daemon keeps watching but dispatches nothing."
+          if value == "1" else "pr-pulse resumed: the daemon dispatches again.")
+
+
+DOMAIN = f"gui/{os.getuid()}"
+
+
+def pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def pr_pulse_background_sessions(con):
+    """Live background sessions that pr-pulse itself started (workers and /pr-pulse:spawn ones)."""
+    names = set()
+    for r in con.execute("SELECT detail FROM events WHERE kind IN ('worker.spawned','session.spawn')"):
+        try:
+            names.add(json.loads(r[0]).get("name"))
+        except (ValueError, AttributeError):
+            pass
+    live = core.list_sessions() or []
+    return [s for s in live if s.get("kind") == "background" and s.get("name") in names]
+
+
+def cmd_stop(con, args):
+    keep_workers = "--keep-workers" in args
+    db.set_setting(con, "paused", "1")
+    db.set_setting(con, "stopped", "1")
+    report = []
+    # 1. The daemon: disable survives reboot and login; bootout stops it now.
+    subprocess.call(["launchctl", "disable", f"{DOMAIN}/{LABEL}"], stderr=subprocess.DEVNULL)
+    subprocess.call(["launchctl", "bootout", f"{DOMAIN}/{LABEL}"], stderr=subprocess.DEVNULL)
+    for _ in range(20):
+        if not daemon_running()[0]:
+            break
+        time.sleep(0.25)
+    report.append("daemon: " + ("STILL RUNNING — check `launchctl list " + LABEL + "`"
+                                if daemon_running()[0] else "stopped (stays off after reboot)"))
+    # 2. Inbox watchers in every session.
+    killed, stuck = 0, []
+    inbox = db.HOME / "inbox"
+    for pidf in inbox.glob("*.pid") if inbox.exists() else []:
+        try:
+            pid = int(pidf.read_text().strip())
+        except ValueError:
+            pidf.unlink(missing_ok=True)
+            continue
+        if not pid_alive(pid):
+            pidf.unlink(missing_ok=True)
+            continue
+        os.kill(pid, 15)
+        for _ in range(40):              # the watcher may be inside a 5 s sleep
+            if not pid_alive(pid):
+                break
+            time.sleep(0.25)
+        if pid_alive(pid):
+            try:
+                os.kill(pid, 9)
+            except OSError:
+                pass
+            time.sleep(0.2)
+        if pid_alive(pid):
+            stuck.append(pid)
+        else:
+            killed += 1
+        pidf.unlink(missing_ok=True)
+        (inbox / (pidf.stem + ".live")).unlink(missing_ok=True)
+    subprocess.call(["pkill", "-f", "pr-pulse-asker.py"], stderr=subprocess.DEVNULL)
+    con.execute("UPDATE questions SET status='pending' WHERE status='showing'")
+    report.append(f"inbox watchers: {killed} stopped" + (f"; STILL RUNNING: {stuck}" if stuck else ""))
+    # 3. Background sessions pr-pulse started; their unfinished jobs go back to the queue.
+    if keep_workers:
+        report.append("background sessions: left running (--keep-workers)")
+    else:
+        stopped, failed = [], []
+        for s in pr_pulse_background_sessions(con):
+            # `claude stop` takes the short id that `claude --bg` prints (or the name), not
+            # the full session id.
+            ok = any(subprocess.call(["claude", "stop", ref], stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL) == 0
+                     for ref in (s["sessionId"][:8], s.get("name")) if ref)
+            if not ok:
+                failed.append(s.get("name"))
+            if ok:
+                stopped.append(s.get("name"))
+                con.execute("UPDATE jobs SET status='queued', sid=NULL, updated_at=?, "
+                            "note='requeued: stopped by pr-pulse stop' WHERE sid=? AND "
+                            "status IN ('claimed','delivered')", (time.time(), s["sessionId"]))
+        report.append(f"background sessions: {len(stopped)} stopped"
+                      + (f" ({', '.join(stopped)}); conversations kept, `claude attach <id>` reopens"
+                         if stopped else "")
+                      + (f"; COULD NOT STOP: {', '.join(failed)}" if failed else ""))
+    held = con.execute("SELECT COUNT(*) FROM jobs WHERE status IN ('queued','claimed','delivered',"
+                       "'waiting_user')").fetchone()[0]
+    db.event(con, "stopped", {"keep_workers": keep_workers})
+    report.append("announcements: off while stopped")
+    report.append(f"jobs kept for later: {held}. Worker worktrees (<repo>/.claude/worktrees/pr-pulse-*) "
+                  "are kept: they may hold work.")
+    print(("pr-pulse is STOPPED. Nothing of it runs in the background." if "STILL" not in " ".join(report) and "COULD NOT" not in " ".join(report) else "pr-pulse is STOPPED, but something did not stop — see below.") + "\n  " + "\n  ".join(report)
+          + "\nBring it back with /pr-pulse:start (or `pr-pulse start`).")
+
+
+def migrate_old_labels():
+    """Remove a daemon installed under an earlier label, so only one runs."""
+    for old in OLD_LABELS:
+        plist = PLIST.parent / f"{old}.plist"
+        subprocess.call(["launchctl", "bootout", f"gui/{os.getuid()}/{old}"], stderr=subprocess.DEVNULL)
+        if plist.exists():
+            plist.unlink()
+            print(f"removed the earlier daemon {old}")
+
+
+def cmd_start(con, args):
+    db.set_setting(con, "stopped", "0")
+    db.set_setting(con, "paused", "0")
+    if not PLIST.exists() or any((PLIST.parent / f"{o}.plist").exists() for o in OLD_LABELS):
+        cmd_daemon(con, ["install"])
+    else:
+        subprocess.call(["launchctl", "enable", f"{DOMAIN}/{LABEL}"], stderr=subprocess.DEVNULL)
+        if not daemon_running()[0]:
+            rc = subprocess.call(["launchctl", "bootstrap", DOMAIN, str(PLIST)], stderr=subprocess.DEVNULL)
+            if rc != 0 and not daemon_running()[0]:
+                die(f"launchctl bootstrap failed ({rc}); see {LOG}")
+    db.event(con, "started")
+    regs = con.execute("SELECT name, sid FROM sessions WHERE registered=1 AND status != 'gone'").fetchall()
+    print("pr-pulse is STARTED: daemon running, dispatching, announcements on.")
+    if regs:
+        print("Registered sessions need their inbox watcher back: run /pr-pulse:join in "
+              + ", ".join(r["name"] or r["sid"][:8] for r in regs)
+              + ". Until then their jobs go to fresh workers.")
+
+
+def cmd_prune(con, args):
+    days = int(opt(args, "--days", db.load_config().get("retention_days", 30)))
+    if days < 1:
+        die("--days must be at least 1", 2)
+    out = db.prune(con, days)
+    gone = {k: v for k, v in out.items() if v}
+    print(f"pruned history older than {days} days: " + (", ".join(f"{k} {v}" for k, v in gone.items())
+                                                         if gone else "nothing that old"))
+
+
+def cmd_tick(con, args):
+    cmd = [sys.executable, str(HERE / "pr-pulsed.py"), "--once"] + args
+    sys.exit(subprocess.call(cmd))
+
+
+def cmd_daemon(con, args):
+    sub = args[0] if args else "status"
+    if sub == "status":
+        running, pid = daemon_running()
+        print(f"{LABEL}: {'running, pid ' + pid if running else 'not running'}"
+              f"{'' if PLIST.exists() else ' (not installed)'}; runs {plugin_version(APP) or '?'} "
+              f"from {APP}; log {LOG}")
+        return
+    if sub == "uninstall":
+        subprocess.call(["launchctl", "bootout", f"gui/{os.getuid()}", str(PLIST)],
+                        stderr=subprocess.DEVNULL)
+        PLIST.unlink(missing_ok=True)
+        print(f"uninstalled {LABEL}")
+        return
+    if sub == "sync":
+        # Called by the plugin's SessionStart hook and after an update. Compares CONTENT, not
+        # version numbers: the installed plugin is copied over the service's copy whenever they
+        # differ (also for a same-version change), and the service restarts on it. Quiet when
+        # nothing changed, unless run by hand.
+        if not PLIST.exists():
+            return
+        src = newest_installed()
+        synced = None
+        if src and src.exists() and current.fingerprint(src) != current.app_fingerprint():
+            synced = current.sync(src)
+        v = plugin_version(current.APP)
+        restarted = False
+        if daemon_running()[0] and db.get_setting(con, "daemon_fingerprint", "") != current.app_fingerprint():
+            subprocess.call(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{LABEL}"],
+                            stderr=subprocess.DEVNULL)
+            restarted = True
+        if synced or restarted:
+            print(f"pr-pulse: the background service now runs {v}")
+        elif sys.stdout.isatty():
+            print(f"pr-pulse: the background service already runs the installed pr-pulse ({v or '?'}).")
+        return
+    if sub != "install":
+        die("usage: pr-pulse daemon install|uninstall|status|sync", 2)
+    migrate_old_labels()
+    version = sync_app()
+    app_scripts = APP / "scripts"
+    path_dirs = []
+    for tool in ("claude", "gh", "git", "jq"):
+        p = shutil.which(tool)
+        if not p and tool in ("claude", "gh"):
+            die(f"{tool} not found on PATH; install it first")
+        if p and os.path.dirname(p) not in path_dirs:
+            path_dirs.append(os.path.dirname(p))
+    path_dirs += [d for d in ("/usr/bin", "/bin", "/usr/sbin", "/sbin") if d not in path_dirs]
+    db.HOME.mkdir(parents=True, exist_ok=True)
+    plist = {
+        "Label": LABEL,
+        "ProgramArguments": ["/usr/bin/python3", str(app_scripts / "pr-pulsed.py")],
+        "RunAtLoad": True,
+        "KeepAlive": True,
+        "ThrottleInterval": 30,
+        "ProcessType": "Background",
+        "StandardOutPath": str(LOG),
+        "StandardErrorPath": str(LOG),
+        "EnvironmentVariables": {"PATH": ":".join(path_dirs), "HOME": str(Path.home())},
+    }
+    PLIST.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.call(["launchctl", "bootout", f"gui/{os.getuid()}", str(PLIST)],
+                    stderr=subprocess.DEVNULL)
+    subprocess.call(["launchctl", "enable", f"gui/{os.getuid()}/{LABEL}"], stderr=subprocess.DEVNULL)
+    db.set_setting(con, "stopped", "0")
+    with open(PLIST, "wb") as f:
+        plistlib.dump(plist, f)
+    rc = subprocess.call(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(PLIST)])
+    if rc != 0:
+        die(f"launchctl bootstrap failed ({rc}); see {LOG}")
+    link = Path.home() / ".local" / "bin" / "pr-pulse"
+    try:
+        link.parent.mkdir(parents=True, exist_ok=True)
+        if link.is_symlink() or not link.exists():
+            if link.is_symlink():
+                link.unlink()
+            link.symlink_to(app_scripts / "pr-pulse")
+    except OSError as e:
+        print(f"note: could not link {link}: {e}")
+    print(f"installed and started {LABEL} {version} from {APP}; log {LOG}; CLI linked at {link}")
+
+
+def my_sid(args=None):
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    if args and "--sid" in args:
+        sid = args[args.index("--sid") + 1]
+    if not sid or not all(c.isalnum() or c in "._-" for c in sid):
+        die("no session id: run this from inside a Claude Code session")
+    return sid
+
+
+def opt(args, name, default=None):
+    if name in args:
+        i = args.index(name)
+        if i + 1 < len(args):
+            return args[i + 1]
+        die(f"{name} needs a value", 2)
+    return default
+
+
+def get_job(con, ref):
+    try:
+        row = con.execute("SELECT * FROM jobs WHERE id=?", (int(ref),)).fetchone()
+    except (TypeError, ValueError):
+        row = None
+    if not row:
+        die(f"no job {ref}")
+    return row
+
+
+def resolve_focus(con, slug, sid, raw):
+    """--for a,b: each must name exactly one known session in this repo, and not this one."""
+    names = []
+    for want in [x.strip() for x in raw.split(",") if x.strip()]:
+        rows = con.execute("SELECT sid, name FROM sessions WHERE slug=? AND status != 'gone' AND "
+                           "(name=? OR sid LIKE ?)", (slug, want, want + "%")).fetchall()
+        if not rows:
+            die(f"no live session named {want!r} in {slug} (pr-pulse status lists them)", 2)
+        if len(rows) > 1:
+            die(f"{want!r} matches {len(rows)} sessions; use the session id instead", 2)
+        if rows[0]["sid"] == sid:
+            die("a session can't be its own PR session; pick the session whose PRs it handles", 2)
+        names.append(rows[0]["name"] or rows[0]["sid"])
+    if not names:
+        die("--for needs at least one session name", 2)
+    return names
+
+
+def cmd_join(con, args):
+    import dispatch
+    sid = my_sid(args)
+    cwd = os.getcwd()
+    root, slug, branch = core.repo_of(cwd)
+    slug = opt(args, "--repo", slug)
+    if not slug:
+        die("this session is not inside a GitHub repo; pass --repo <owner/name>")
+    if not con.execute("SELECT 1 FROM repos WHERE slug=?", (slug,)).fetchone():
+        if not root:
+            die(f"{slug} is not mapped; run /pr-pulse:map first")
+        con.execute("INSERT INTO repos(path, slug, announce, added_at) VALUES(?,?,0,?)",
+                    (root, slug, time.time()))
+    con.execute("INSERT INTO sessions(sid, cwd, slug, branch, status, registered, registered_at, seen_at) "
+                "VALUES(?,?,?,?, 'idle', 1, ?, ?) ON CONFLICT(sid) DO UPDATE SET registered=1, "
+                "registered_at=excluded.registered_at, slug=excluded.slug",
+                (sid, cwd, slug, branch, time.time(), time.time()))
+    for_ = opt(args, "--for")
+    if for_:
+        names = resolve_focus(con, slug, sid, for_)
+        con.execute("UPDATE sessions SET focus=? WHERE sid=?", (json.dumps(names), sid))
+    elif "--general" in args:
+        con.execute("UPDATE sessions SET focus=NULL WHERE sid=?", (sid,))
+    focus_now = json.loads((con.execute("SELECT focus FROM sessions WHERE sid=?", (sid,)).fetchone()
+                            or {"focus": None})["focus"] or "[]")
+    if focus_now:
+        # a focused session is never the repo's catch-all PR session
+        con.execute("UPDATE repos SET pr_session=NULL WHERE pr_session=?", (sid,))
+    elif not con.execute("SELECT pr_session FROM repos WHERE slug=? AND pr_session IS NOT NULL",
+                         (slug,)).fetchone():
+        con.execute("UPDATE repos SET pr_session=? WHERE slug=?", (sid, slug))
+    db.event(con, "session.join", {"sid": sid, "slug": slug, "focus": focus_now})
+    live = dispatch.inbox_live(sid)
+    if focus_now:
+        print(f"This session now handles only the PRs of {', '.join(focus_now)} in {slug}, whenever it "
+              f"is idle. Their PRs wait for it; nothing else is handed to it.")
+    else:
+        print(f"This session now takes pr-pulse work for {slug} whenever it is idle: reviews of others' "
+              f"PRs, and your PRs that have no PR session of their own.")
+    if not live:
+        print(f"NEXT: start the inbox watcher with the Monitor tool (persistent), command:\n"
+              f"  {HERE / 'inbox-watch.sh'} {sid}")
+
+
+def cmd_leave(con, args):
+    sid = my_sid(args)
+    con.execute("UPDATE sessions SET registered=0, focus=NULL WHERE sid=?", (sid,))
+    con.execute("UPDATE repos SET pr_session=NULL WHERE pr_session=?", (sid,))
+    pid = db.HOME / "inbox" / f"{sid}.pid"
+    if pid.exists():
+        try:
+            os.kill(int(pid.read_text().strip()), 15)
+        except (OSError, ValueError):
+            pass
+    db.event(con, "session.leave", {"sid": sid})
+    print("This session no longer takes pr-pulse work. Jobs it already has stay with it.")
+
+
+def cmd_watch(con, args):
+    os.execv(str(HERE / "inbox-watch.sh"), [str(HERE / "inbox-watch.sh")] + args)
+
+
+def cmd_spawn(con, args):
+    if not args:
+        die("usage: pr-pulse spawn <owner/name>", 2)
+    slug = args[0]
+    row = con.execute("SELECT path FROM repos WHERE slug=?", (slug,)).fetchone()
+    if not row:
+        die(f"{slug} is not mapped; run /pr-pulse:map first")
+    name = f"{slug.split('/')[-1]}-pr"
+    prompt = ("You are the pr-pulse PR session for " + slug + ". Run `/pr-pulse:join` now, then wait "
+              "for jobs. Do not start any other work.")
+    p = subprocess.run(["claude", "--bg", "-n", name, prompt], cwd=row["path"],
+                       capture_output=True, text=True, timeout=60)
+    if p.returncode != 0:
+        die(f"claude --bg failed: {(p.stderr or p.stdout).strip()[:200]}")
+    db.event(con, "session.spawn", {"slug": slug, "name": name})
+    print(f"started background session {name} in {row['path']}; it registers itself with /pr-pulse:join.\n"
+          f"Open it with: claude attach {name}")
+
+
+def cmd_job(con, args):
+    sub = args[0] if args else "list"
+    if sub == "list":
+        rows = con.execute("SELECT j.*, p.slug, p.n FROM jobs j LEFT JOIN prs p ON p.url=j.pr_url "
+                           "ORDER BY CASE WHEN j.status IN ('done','failed','cancelled') THEN 1 ELSE 0 END, "
+                           "j.priority, j.id DESC LIMIT 40").fetchall()
+        for r in rows:
+            print(f"{r['id']:>4} {r['status']:<12} {r['action']:<9} {r['slug']}#{r['n']:<6} "
+                  f"{(r['note'] or '')[:70]}")
+        if not rows:
+            print("no jobs yet")
+        return
+    if len(args) < 2:
+        die(f"usage: pr-pulse job {sub} <id>", 2)
+    job = get_job(con, args[1])
+    jid = job["id"]
+    if sub == "show":
+        import dispatch
+        pr = con.execute("SELECT * FROM prs WHERE url=?", (job["pr_url"],)).fetchone()
+        if not pr:
+            die("this job's PR is not tracked")
+        print(dispatch.render_prompt(dict(job), dict(pr), "", con))
+        return
+    if sub in ("start", "beat"):
+        stalled = job["status"] == "waiting_user" and (job["note"] or "").startswith("stalled")
+        if job["status"] not in ("claimed", "delivered", "queued") and not stalled:
+            die(f"job {jid} is {job['status']}; nothing to {sub}")
+        sid = os.environ.get("CLAUDE_CODE_SESSION_ID") or job["sid"]
+        if sid and (job["sid"] or "").startswith("name:") and not sid.startswith("name:"):
+            # a worker pr-pulse started: mark it now (the daemon could not bind it in time)
+            con.execute("INSERT INTO sessions(sid, name, kind, status, spawned, seen_at) VALUES(?,?,"
+                        "'background','busy',1,?) ON CONFLICT(sid) DO UPDATE SET spawned=1",
+                        (sid, job["sid"][5:], time.time()))
+        con.execute("UPDATE jobs SET status='delivered', sid=COALESCE(?, sid), heartbeat_at=?, "
+                    "updated_at=? WHERE id=?", (sid, time.time(), time.time(), jid))
+        print(f"job {jid}: {'started' if sub == 'start' else 'heartbeat noted'}")
+        import dispatch
+        if sub == "start" and sid and not dispatch.inbox_live(sid):
+            print(f"Start your inbox watcher now with the Monitor tool (persistent), so the user's "
+                  f"answers and lines can reach you:\n  {HERE / 'inbox-watch.sh'} {sid}")
+        return
+    if sub == "wait-user":
+        n = con.execute("SELECT COUNT(*) FROM outbox WHERE job_id=? AND status='pending'",
+                        (jid,)).fetchone()[0]
+        if n == 0:
+            die("park the drafts first: pr-pulse outbox add --job ... (nothing is pending)")
+        db.set_job(con, jid, "waiting_user", f"{n} draft(s) waiting for the user's lines")
+        import dispatch
+        import outbox
+        for d in con.execute("SELECT id FROM outbox WHERE job_id=? AND status='pending'", (jid,)).fetchall():
+            outbox.ask_for(con, d["id"])
+        sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
+        print(f"job {jid}: parked with {n} draft(s). The user gets each one as a notification "
+              f"(or in /pr-pulse:inbox) and adds their lines; stop here and wait.")
+        if sid and not dispatch.inbox_live(sid):
+            print(f"So this session hears back, start the inbox watcher with the Monitor tool "
+                  f"(persistent), command:\n  {HERE / 'inbox-watch.sh'} {sid}")
+        return
+    if sub == "done":
+        db.set_job(con, jid, "done", opt(args, "--note"))
+        print(f"job {jid}: done")
+        return
+    if sub == "fail":
+        why = opt(args, "--why", "no reason given")
+        db.set_job(con, jid, "failed", why)
+        import dispatch
+        dispatch.notify(f"pr-pulse job {jid} ({job['action']}) failed: {why}")
+        print(f"job {jid}: failed — the user was notified")
+        return
+    die(f"unknown job command {sub}", 2)
+
+
+def requeue_if_lines_ready(con, job_id):
+    import outbox
+    return outbox.requeue_if_lines_ready(con, job_id)
+
+
+def cmd_outbox(con, args):
+    sub = args[0] if args else "list"
+    if sub == "add":
+        jid = int(opt(args, "--job") or die("--job is required", 2))
+        kind = opt(args, "--kind", "comment")
+        if kind not in ("review", "reply", "comment", "decision"):
+            die("--kind must be review, reply, comment or decision", 2)
+        job = get_job(con, jid)
+        draft = sys.stdin.read() if not sys.stdin.isatty() else ""
+        if not draft.strip():
+            die("the draft is empty (pass it on stdin)", 2)
+        cur = con.execute("INSERT INTO outbox(job_id, pr_url, kind, draft, target, created_at) "
+                          "VALUES(?,?,?,?,?,?)", (jid, job["pr_url"], kind, draft.rstrip(),
+                                                  opt(args, "--target", ""), time.time()))
+        print(f"draft {cur.lastrowid} parked for job {jid}")
+        return
+    if sub in ("list", "show"):
+        jid = opt(args, "--job")
+        q = ("SELECT o.*, p.slug, p.n, p.title FROM outbox o LEFT JOIN prs p ON p.url=o.pr_url WHERE "
+             + ("o.job_id=? AND o.status IN ('pending','ready')" if jid
+                else "(o.status='pending' OR (o.status='fill' AND o.lines IS NOT NULL))")
+             + " ORDER BY o.pr_url, o.id")
+        rows = con.execute(q, (int(jid),) if jid else ()).fetchall()
+        if not rows:
+            print("no drafts waiting" if not jid else f"no drafts for job {jid}")
+            return
+        cur = None
+        for r in rows:
+            if r["pr_url"] != cur:
+                cur = r["pr_url"]
+                print(f"\n=== {r['slug']}#{r['n']} — {r['title'] or ''}\n    {r['pr_url']}")
+            print(f"\n--- draft {r['id']} · {r['kind']}{' · ' + r['target'] if r['target'] else ''}"
+                  f" · job {r['job_id']} · {r['status']}")
+            if r["lines"] and r["status"] == "fill":
+                print("Proposed top lines, waiting for your Post (not yours until then):\n" + r["lines"]
+                      + "\n\nClaude's draft (quote below):")
+            elif r["lines"]:
+                print("Your lines (post these first):\n" + r["lines"] + "\n\nClaude's draft (quote below):")
+            print(r["draft"])
+        return
+    if sub == "decide":
+        if len(args) < 3 or args[2] not in ("merge", "re-review"):
+            die("usage: pr-pulse outbox decide <draft id> merge|re-review", 2)
+        row = con.execute("SELECT * FROM outbox WHERE id=? AND kind='decision'", (int(args[1]),)).fetchone()
+        if not row or row["status"] != "pending":
+            die(f"no pending merge decision {args[1]}")
+        import outbox
+        outbox.decide(con, row["id"], args[2])
+        if args[2] == "merge":
+            print("OK: the merge is queued on the next tick, for this exact head only. "
+                  "Any new push asks you again.")
+        else:
+            print("OK: the job goes back to its session to re-request review. Nothing merges.")
+        return
+    if sub == "propose":
+        if len(args) < 2:
+            die("usage: pr-pulse outbox propose <draft id> < lines", 2)
+        row = con.execute("SELECT * FROM outbox WHERE id=?", (int(args[1]),)).fetchone()
+        if not row or row["status"] != "fill":
+            die(f"draft {args[1]} is not waiting for filled-in lines (only a draft the user marked "
+                f"'Fill it for me' takes a proposal)")
+        job = get_job(con, row["job_id"])
+        if job["status"] not in ("claimed", "delivered"):
+            die(f"job {job['id']} is {job['status']}; nothing to propose for")
+        lines = sys.stdin.read() if not sys.stdin.isatty() else ""
+        if not lines.strip():
+            die("your lines are empty (pass them on stdin)", 2)
+        import outbox
+        qid = outbox.propose(con, row["id"], lines)
+        print(f"draft {row['id']}: lines proposed; question {qid} asks the user to Post, type their own "
+              f"or Drop. pr-pulse saves their choice itself and brings the job back to this session to "
+              f"post. Stop here and wait.")
+        return
+    if sub in ("lines", "posted", "drop"):
+        if len(args) < 2:
+            die(f"usage: pr-pulse outbox {sub} <draft id>", 2)
+        row = con.execute("SELECT * FROM outbox WHERE id=?", (int(args[1]),)).fetchone()
+        if not row:
+            die(f"no draft {args[1]}")
+        if sub == "lines" and row["kind"] == "decision":
+            die("this is a merge decision: use `pr-pulse outbox decide <id> merge|re-review`", 2)
+        if sub == "lines":
+            lines = sys.stdin.read() if not sys.stdin.isatty() else ""
+            if not lines.strip():
+                die("your lines are empty (pass them on stdin)", 2)
+            filled = "--filled" in args
+            import outbox
+            back = outbox.set_lines(con, row["id"], lines, filled)
+            print(f"draft {row['id']}: {'lines filled in for you' if filled else 'your lines'} saved" + ("; the job goes back to its session to post"
+                                                            if back else ""))
+        elif sub == "drop":
+            import outbox
+            outbox.drop(con, row["id"])
+            print(f"draft {row['id']}: dropped, nothing will be posted for it")
+        else:
+            if row["status"] != "ready":
+                die(f"draft {row['id']} is {row['status']}, not ready: it has no lines from the user yet")
+            con.execute("UPDATE outbox SET status='posted', posted_at=? WHERE id=?", (time.time(), row["id"]))
+            print(f"draft {row['id']}: marked posted")
+        return
+    die(f"unknown outbox command {sub}", 2)
+
+
+def cmd_ask(con, args):
+    import dispatch
+    import questions
+    jid = opt(args, "--job")
+    if "--json" in args:
+        try:
+            payload = json.loads(sys.stdin.read())
+        except ValueError as e:
+            die(f"the JSON payload is not valid: {e}", 2)
+        q = str(payload.get("question") or "")
+        summary = str(payload.get("summary") or "")
+        options = [str(o) for o in payload.get("options") or []]
+        allow_text = bool(payload.get("allow_text")) or not options
+        findings = payload.get("findings") or []
+    else:
+        q = opt(args, "--question")
+        summary = opt(args, "--summary", "")
+        options = [args[i + 1] for i, a in enumerate(args) if a == "--option" and i + 1 < len(args)]
+        allow_text = "--text" in args or not options
+        findings = []
+    if not jid or not q:
+        die('usage: pr-pulse ask --job <id> --question "<text>" --summary "<one line>" [--option A …] '
+            '[--text]   or   pr-pulse ask --job <id> --json < payload.json', 2)
+    if not summary and not findings:
+        die("every question needs context: pass --summary \"<one line>\" (or findings in --json), so "
+            "the user can decide from the notification", 2)
+    if not isinstance(findings, list) or any(not isinstance(f, dict) for f in findings):
+        die("findings must be a list of {severity, path, what, scope}", 2)
+    job = get_job(con, jid)
+    if job["status"] not in ("claimed", "delivered", "waiting_user"):
+        die(f"job {jid} is {job['status']}; nothing to ask about")
+    pr = con.execute("SELECT slug, n, title FROM prs WHERE url=?", (job["pr_url"],)).fetchone()
+    if pr and not re.search(rf"#{pr['n']}\b", q):
+        # every question names its PR: several jobs ask at once, and a bare "Merge now?" is a guess
+        title = (pr["title"] or "").strip()
+        q = f"{pr['slug'].split('/')[-1]}#{pr['n']}" + (f" ({title[:60]})" if title else "") + f": {q}"
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID") or job["sid"]
+    qid = questions.add(con, job["id"], sid, q, options, allow_text, summary, findings)
+    con.execute("UPDATE jobs SET heartbeat_at=? WHERE id=?", (time.time(), job["id"]))
+    print(f"question {qid} asked. The user gets it as a notification. Stop here and wait: their answer "
+          f"arrives as a line from your pr-pulse inbox watcher ('the user answered question {qid} …').")
+    if sid and not dispatch.inbox_live(sid):
+        print(f"No inbox watcher is running in this session. Start it with the Monitor tool "
+              f"(persistent) first, or the answer will not wake you:\n  {HERE / 'inbox-watch.sh'} {sid}")
+
+
+def cmd_questions(con, args):
+    import questions
+    questions.expire_finished(con)
+    rows = con.execute("SELECT q.*, p.slug, p.n, j.action FROM questions q JOIN jobs j ON j.id=q.job_id "
+                       "LEFT JOIN prs p ON p.url=j.pr_url WHERE q.status IN ('pending','showing') "
+                       "AND q.kind='question' ORDER BY q.created_at").fetchall()
+    if not rows:
+        print("no questions waiting")
+        return
+    for r in rows:
+        opts = json.loads(r["options"] or "[]")
+        print(f"\n--- question {r['id']} · {r['slug']}#{r['n']} {r['action']} · job {r['job_id']}"
+              f"{' · on screen now' if r['status'] == 'showing' else ''}")
+        import rules as _r
+        print(_r.notification_message(r["question"], r["summary"] or "", json.loads(r["findings"] or "[]")))
+        if opts:
+            print("options: " + " | ".join(opts) + (" | (or type an answer)" if r["allow_text"] else ""))
+
+
+def cmd_answer(con, args):
+    import questions
+    if len(args) < 2:
+        die("usage: pr-pulse answer <question id> <text>", 2)
+    res = questions.answer(con, int(args[0]), " ".join(args[1:]), "inbox", db.HOME / "inbox")
+    msgs = {"ok": "answered; the session wakes up with it", "expired": "that question expired: its job finished",
+            "already": "already answered", "unknown": "no such question"}
+    print(f"question {args[0]}: {msgs[res]}")
+    if res != "ok":
+        sys.exit(1)
+
+
+def cmd_pr(con, args):
+    if len(args) >= 2 and args[0] in ("release", "reset-rounds"):
+        n = con.execute("UPDATE prs SET feedback_rounds=0, bot_rounds=0, hold=0 WHERE url=?", (args[1],)).rowcount
+        if n:
+            db.event(con, "pr.release", {"pr": args[1]})
+        print("released: pr-pulse handles this PR automatically again" if n else "that PR is not tracked")
+        return
+    die("usage: pr-pulse pr release <url>", 2)
+
+
+def cmd_announce(con, args):
+    """announce <url> (text on stdin) | announce list | announce drop <url> | announce open <url>"""
+    import announce
+    sub = args[0] if args else ""
+    if sub == "list":
+        rows = announce.waiting(con)
+        if not rows:
+            print("No PR is waiting for an announcement.")
+        for r in rows:
+            why = f"failed: {r['error']}" if r["state"] == "failed" else "opened, no announcement saved yet"
+            print(f"{r['url']}  {r['title'] or ''}  ({why})")
+        return
+    if sub == "retry" and len(args) > 1:
+        print("queued again: pr-pulse posts the saved text within a minute" if announce.retry(con, args[1])
+              else "no saved text to retry for that PR")
+        return
+    if sub == "drop" and len(args) > 1:
+        print("dropped: it won't be announced" if announce.drop(con, args[1])
+              else "nothing to drop for that PR")
+        return
+    if sub == "open" and len(args) > 1:   # the hook: a PR was just opened
+        announce.record_open(con, args[1], args[2] if len(args) > 2 else "",
+                             args[3] if len(args) > 3 else "")
+        return
+    if not sub or sub.startswith("-"):
+        die("usage: pr-pulse announce <pr url> < text | announce list | announce drop <pr url>", 2)
+    text = "" if sys.stdin.isatty() else sys.stdin.read()
+    if not text.strip():
+        die("the announcement text is empty (pass it on stdin)", 2)
+    res = announce.save(con, sub, text, (core.run(["gh", "pr", "view", sub, "--json", "title", "-q", ".title"]) or "").strip())
+    label = os.environ.get("PR_PULSE_CHANNEL_LABEL", "#pr-review")
+    msgs = {
+        "queued": f"saved: pr-pulse posts it in {label} within a minute",
+        "edit-queued": f"saved: pr-pulse updates the {label} message within a minute",
+        "cannot-edit": "that PR's announcement can't be edited (it was posted without the bot token)",
+        "bad-url": "not a GitHub pull request URL",
+    }
+    if res in ("cannot-edit", "bad-url"):
+        print(msgs[res])
+        sys.exit(2)
+    if not announce.daemon_fresh(con):
+        # Don't start with "saved": the session must tell the user nothing goes out yet.
+        print(f"NOT POSTED YET: the text is saved, but the pr-pulse service isn't running or is older "
+              f"than this plugin. Tell the user to run `pr-pulse start`, or `pr-pulse daemon sync` after "
+              f"a plugin update; it posts in {label} once the service is back.")
+        sys.exit(3)
+    print(msgs[res])
+
+
+def cmd_decisions(con, args):
+    """decisions <pr url|number> : the answers later jobs on that PR are told about."""
+    import dispatch
+    if not args:
+        die("usage: pr-pulse decisions <pr url or number> | pr-pulse forget <question id>", 2)
+    ref = args[0]
+    row = con.execute("SELECT url FROM prs WHERE url=? OR (CAST(n AS TEXT)=? ) ORDER BY updated_at DESC",
+                      (ref, ref.lstrip("#"))).fetchone()
+    if not row:
+        die(f"no tracked PR {ref}")
+    rows = dispatch.earlier_decisions(con, row["url"], -1)
+    if not rows:
+        print(f"No answers are carried for {row['url']}.")
+    for r in rows:
+        print(f"q{r['id']}  {time.strftime('%m-%d %H:%M', time.localtime(r['answered_at']))}  "
+              f"{r['question'][:70]}  ->  {r['answer']}")
+    if rows:
+        print("A wrong one? pr-pulse forget <question id> stops it being carried to later jobs.")
+
+
+def cmd_forget(con, args):
+    """forget <question id>: a mistaken answer is no longer carried to later jobs."""
+    if not args or not args[0].lstrip("q").isdigit():
+        die("usage: pr-pulse forget <question id>", 2)
+    qid = int(args[0].lstrip("q"))
+    n = con.execute("UPDATE questions SET answered_via='withdrawn' WHERE id=? AND status='answered'",
+                    (qid,)).rowcount
+    if n:
+        db.event(con, "question.withdrawn", {"id": qid})
+    print(f"question {qid}: its answer is no longer carried to later jobs" if n
+          else f"question {qid} has no answer to withdraw")
+
+
+def cmd_focus(con, args):
+    """focus [list] | focus clear <session> | focus origin <pr> <session> | focus record <url> <sid>"""
+    import focus
+    sub = args[0] if args else "list"
+    if sub == "record" and len(args) >= 3:          # the PostToolUse hook, after gh pr create
+        focus.record_origin(con, args[1], args[2])
+        return
+    if sub == "clear" and len(args) >= 2:
+        n = con.execute("UPDATE sessions SET focus=NULL WHERE (name=? OR sid LIKE ?) AND focus IS NOT NULL",
+                        (args[1], args[1] + "%")).rowcount
+        print(f"{args[1]} is a general PR session again: its pairs' PRs go to the general session or "
+              f"a worker" if n else f"no focused session named {args[1]}")
+        return
+    if sub == "origin" and len(args) >= 3:
+        ref = args[1].lstrip("#")
+        pr = con.execute("SELECT url FROM prs WHERE url=? OR CAST(n AS TEXT)=? ORDER BY updated_at DESC",
+                         (args[1], ref)).fetchone()
+        s = con.execute("SELECT sid, name FROM sessions WHERE name=? OR sid LIKE ?",
+                        (args[2], args[2] + "%")).fetchall()
+        if not pr or len(s) != 1:
+            die("usage: pr-pulse focus origin <pr url or number> <session name> (one known PR and one session)", 2)
+        con.execute("INSERT INTO pr_origin(url, sid, at) VALUES(?,?,?) ON CONFLICT(url) DO UPDATE SET "
+                    "sid=excluded.sid, at=excluded.at", (pr["url"], s[0]["sid"], time.time()))
+        print(f"{pr['url']} now belongs to {s[0]['name'] or s[0]['sid'][:8]}")
+        return
+    if sub != "list":
+        die("usage: pr-pulse focus [list] | clear <session> | origin <pr> <session>", 2)
+    rows = con.execute("SELECT sid, name, slug, status, focus FROM sessions WHERE registered=1 "
+                       "ORDER BY slug, name").fetchall()
+    for r in rows:
+        f = focus.focus_of(r)
+        role = ("handles PRs of " + ", ".join(f)) if f else "general (others' PRs and unpaired ones)"
+        print(f"  {(r['name'] or r['sid'][:8]):<26} {r['status']:<6} {role}")
+    held = [j for j in con.execute("SELECT j.id, j.action, j.pr_url, p.slug FROM jobs j JOIN prs p ON "
+                                   "p.url=j.pr_url WHERE j.status='queued'").fetchall()
+            if focus.pairs_for(con, j["slug"], j["pr_url"])]
+    for j in held:
+        print(f"  job {j['id']} {j['action']} {j['pr_url']} waits for its PR session")
+    loose = con.execute("SELECT url FROM prs WHERE kind='own' AND state='OPEN' AND url NOT IN "
+                        "(SELECT url FROM pr_origin)").fetchall()
+    if loose:
+        print("  your open PRs with no known session (pr-pulse focus origin <pr> <session>): "
+              + ", ".join(r["url"].rsplit("/", 1)[-1] for r in loose))
+
+
+def cmd_announces(con, args):
+    root, slug, _ = core.repo_of(os.path.abspath(args[0] if args else "."))
+    row = con.execute("SELECT 1 FROM repos WHERE slug=? AND announce=1", (slug,)).fetchone() if slug else None
+    sys.exit(0 if row else 1)
+
+
+# ---- setup: doctor, secrets, Slack, config ---------------------------------------------
+
+import envfile  # noqa: E402
+import slack    # noqa: E402
+
+SLACK_DIR = HERE.parent / "slack"
+
+
+def config_path():
+    return db.CONFIG_PATH
+
+
+def read_config_file():
+    p = config_path()
+    if not p.exists():
+        return {}
+    try:
+        return json.loads(p.read_text())
+    except ValueError:
+        die(f"{p} is not valid JSON; fix or delete it")
+
+
+def resolve_slug(con, ref):
+    """owner/name, or a path inside a repo, or empty for the current folder's repo."""
+    if ref and "/" in ref and not os.path.exists(ref) and ref.count("/") == 1:
+        return ref
+    _, slug, _ = core.repo_of(os.path.abspath(ref or "."))
+    if not slug:
+        die(f"{ref or 'this folder'} is not a GitHub repo; pass owner/name", 2)
+    return slug
+
+
+def cmd_rules(con, args):
+    """rules [repo] | rules set <repo> <key> <value> | rules unset <repo> <key>
+    | rules add <repo> <sentence> | rules rm <repo> <n> | rules clear <repo>"""
+    import reporules
+    sub = args[0] if args and args[0] in ("set", "unset", "add", "rm", "clear", "list") else "show"
+    rest = args[1:] if sub != "show" else args
+    if sub == "list":
+        clean, errors = reporules.validate(db.load_config().get("repo_rules"))
+        for e in clean.values():
+            print(f"{e['slug']}: {len(e['settings'])} setting(s), {len(e['rules'])} rule(s)")
+        if not clean:
+            print("No repo has its own PR rules yet (/pr-pulse:rules <owner/name>).")
+        for e in errors:
+            print("PROBLEM: " + e)
+        return
+    slug = resolve_slug(con, rest[0] if rest else "")
+    if sub == "show":
+        print(reporules.describe(db.load_config(), slug))
+        return
+    mine = read_config_file()
+    allr = mine.setdefault("repo_rules", {})
+    key = next((k for k in allr if k.lower() == slug.lower()), slug)
+    entry = allr.setdefault(key, {})
+    settings, rules_ = entry.setdefault("settings", {}), entry.setdefault("rules", [])
+    try:
+        if sub == "set" and len(rest) >= 3:
+            settings[rest[1]] = reporules.check_setting(rest[1], " ".join(rest[2:]))
+        elif sub == "unset" and len(rest) >= 2:
+            settings.pop(rest[1], None)
+        elif sub == "add" and len(rest) >= 2:
+            text = " ".join(rest[1:]).strip()
+            if len(text) > reporules.MAX_RULE_LEN or len(rules_) >= reporules.MAX_RULES:
+                raise ValueError(f"at most {reporules.MAX_RULES} rules of {reporules.MAX_RULE_LEN} characters")
+            rules_.append(text)
+        elif sub == "rm" and len(rest) >= 2:
+            i = int(rest[1]) - 1
+            if not 0 <= i < len(rules_):
+                raise ValueError(f"no rule {rest[1]}; there are {len(rules_)}")
+            rules_.pop(i)
+        elif sub == "clear":
+            allr.pop(key, None)
+        else:
+            die("usage: pr-pulse rules [repo] | set <repo> <key> <value> | unset <repo> <key> | "
+                "add <repo> <sentence> | rm <repo> <n> | clear <repo> | list", 2)
+    except ValueError as e:
+        die(str(e), 2)
+    if key in allr and not allr[key].get("settings"):
+        allr[key].pop("settings", None)
+    if key in allr and not allr[key].get("rules"):
+        allr[key].pop("rules", None)
+    if key in allr and not allr[key]:
+        allr.pop(key)
+    if not allr:
+        mine.pop("repo_rules", None)
+    p = config_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(json.dumps(mine, indent=2) + "\n")
+    tmp.replace(p)
+    db.event(con, "repo_rules." + sub, {"repo": slug})
+    print(reporules.describe(db.load_config(), slug))
+    print("Saved. The daemon applies it on its next check (within a minute); new jobs get the rules.")
+
+
+def cmd_config(con, args):
+    sub = args[0] if args else "get"
+    cfg = read_config_file()
+    if sub == "get":
+        if len(args) > 1:
+            print(json.dumps(db.load_config().get(args[1])))
+        else:
+            print(json.dumps(cfg, indent=2) if cfg else "{} (all defaults)")
+        return
+    if sub == "set" and len(args) >= 3:
+        key, raw = args[1], " ".join(args[2:])
+        if key not in db.DEFAULT_CONFIG and key not in ("announce_channel", "my_name", "worker_args"):
+            die(f"unknown setting {key!r}; known: {', '.join(sorted(db.DEFAULT_CONFIG))}, announce_channel")
+        try:
+            val = json.loads(raw)
+        except ValueError:
+            val = raw   # a bare string such as a channel id
+        if key == "post_as":
+            if val not in ("bot", "user"):
+                die("post_as is bot or user", 2)
+            envfile.load_into_environ()
+            if val == "user" and not os.environ.get("PR_PULSE_SLACK_USER_TOKEN"):
+                die("no Slack user token yet: run pr-pulse secret set user-token --from-clipboard "
+                    "(it turns post_as user on by itself)")
+        cfg[key] = val
+        config_path().parent.mkdir(parents=True, exist_ok=True)
+        config_path().write_text(json.dumps(cfg, indent=2) + "\n")
+        print(f"{key} = {json.dumps(val)}")
+        return
+    die("usage: pr-pulse config get [key] | set <key> <json value>", 2)
+
+
+def restart_daemon_if_running():
+    if daemon_running()[0]:
+        subprocess.call(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{LABEL}"],
+                        stderr=subprocess.DEVNULL)
+        return True
+    return False
+
+
+SECRETS = {
+    "bot-token": ("PR_PULSE_SLACK_BOT_TOKEN", r"^xoxb-[A-Za-z0-9-]{20,}$",
+                  "a Slack bot token starts with xoxb-"),
+    "user-token": ("PR_PULSE_SLACK_USER_TOKEN", r"^xoxp-[A-Za-z0-9-]{20,}$",
+                   "a Slack user token starts with xoxp- (the User OAuth Token, not the bot one)"),
+    "webhook": ("PR_PULSE_SLACK_WEBHOOK_URL", r"^https://hooks\.slack\.com/services/[A-Za-z0-9/]+$",
+                "a Slack webhook URL starts with https://hooks.slack.com/services/"),
+}
+
+
+def cmd_secret(con, args):
+    import re as _re
+    if len(args) < 2 or args[0] != "set" or args[1] not in SECRETS:
+        die("usage: pr-pulse secret set bot-token|user-token|webhook --from-clipboard", 2)
+    key, pattern, hint = SECRETS[args[1]]
+    if "--from-clipboard" not in args:
+        die("only --from-clipboard is supported, so the secret never passes through a chat", 2)
+    value = (core.run(["pbpaste"]) or "").strip()
+    if not value:
+        die("the clipboard is empty. Copy it again in the browser, then retry. If a clipboard "
+            f"manager is in the way, paste it into {envfile.ENV} yourself as: export {key}='…'")
+    if not _re.match(pattern, value):
+        die(f"the clipboard does not hold the right thing ({hint}). Nothing was saved.")
+    if args[1] == "user-token":
+        check_user_token(value)   # before saving: a token for someone else is never kept
+    envfile.set_value(key, value)
+    os.environ[key] = value
+    subprocess.run(["pbcopy"], input="", text=True)   # don't leave the secret on the clipboard
+    print(f"saved {key} in {envfile.ENV} (only you can read it); the clipboard was cleared.")
+    if args[1] == "bot-token":
+        try:
+            me = slack.identity()
+            print(f"Slack says: workspace {me['team']}, bot @{me['bot']}; scopes: {', '.join(me['scopes']) or '?'}")
+        except slack.SlackError as e:
+            print(f"Slack did not accept the token ({e}). Copy the Bot User OAuth Token again.")
+            sys.exit(1)
+    if args[1] == "user-token":
+        cfg = read_config_file()
+        cfg["post_as"] = "user"
+        config_path().parent.mkdir(parents=True, exist_ok=True)
+        config_path().write_text(json.dumps(cfg, indent=2) + "\n")
+        print("post_as = \"user\": announcements, verdict replies and reactions now come from you. "
+              "Reading channels stays on the bot. Back to the bot: pr-pulse config set post_as bot")
+    if restart_daemon_if_running():
+        print("the daemon was restarted so it uses the new secret.")
+
+
+def check_user_token(value):
+    """The user token must belong to the person whose Slack id pr-pulse knows (slack_user_id):
+    that equality is what keeps pr-pulse from picking up its own posts. Sets slack_user_id when
+    it is still empty. Dies, saving nothing, on any mismatch or refusal."""
+    old = os.environ.get("PR_PULSE_SLACK_USER_TOKEN")
+    os.environ["PR_PULSE_SLACK_USER_TOKEN"] = value
+    try:
+        me = slack.user_identity()
+    except slack.SlackError as e:
+        die(f"Slack did not accept the user token ({e}). Copy the User OAuth Token again. Nothing was saved.")
+    finally:
+        if old is None:
+            os.environ.pop("PR_PULSE_SLACK_USER_TOKEN", None)
+        else:
+            os.environ["PR_PULSE_SLACK_USER_TOKEN"] = old
+    missing = [sc for sc in slack.USER_SCOPES if sc not in me["scopes"]]
+    if "chat:write" in missing:
+        die("the user token can't post (no chat:write user scope): create the app from "
+            "`pr-pulse slack manifest user`, reinstall, and copy the User OAuth Token again. Nothing was saved.")
+    cfg = read_config_file()
+    known = cfg.get("slack_user_id") or ""
+    if known and known != me["user_id"]:
+        die(f"that token belongs to Slack user {me['user_id']} (@{me['user']}), but pr-pulse knows you as "
+            f"{known}. Copy your own token, or fix slack_user_id. Nothing was saved.")
+    if not known:
+        cfg["slack_user_id"] = me["user_id"]
+        config_path().parent.mkdir(parents=True, exist_ok=True)
+        config_path().write_text(json.dumps(cfg, indent=2) + "\n")
+    print(f"Slack says: workspace {me['team']}, posting as @{me['user']} ({me['user_id']})"
+          + (f"; missing {', '.join(missing)}: verdict emoji will fall back to replies" if missing else ""))
+
+
+def manifest(kind):
+    if kind not in ("announce", "full", "user"):
+        die("kind must be announce, full or user", 2)
+    return json.loads((SLACK_DIR / f"manifest-{kind}.json").read_text())
+
+
+def cmd_slack(con, args):
+    import urllib.parse
+    envfile.load_into_environ()
+    sub = args[0] if args else ""
+    if sub == "manifest-url":
+        m = json.dumps(manifest(args[1] if len(args) > 1 else "announce"), separators=(",", ":"))
+        print("https://api.slack.com/apps?new_app=1&manifest_json=" + urllib.parse.quote(m, safe=""))
+        return
+    if sub == "manifest":
+        m = json.dumps(manifest(args[1] if len(args) > 1 else "announce"), indent=2)
+        if "--copy" in args:
+            subprocess.run(["pbcopy"], input=m, text=True)
+            print("the manifest JSON is on the clipboard")
+        else:
+            print(m)
+        return
+    try:
+        if sub == "whoami":
+            me = slack.identity()
+            print(json.dumps({k: me[k] for k in ("team", "bot", "bot_user", "scopes")}))
+            return
+        if sub == "channels":
+            for c in sorted(slack.channels(), key=lambda c: c["name"]):
+                print(f"{c['id']}\t#{c['name']}\t{'private' if c['private'] else 'public'}\t"
+                      f"{'bot is in it' if c['member'] else 'bot not invited'}")
+            return
+        if sub == "whois" and len(args) > 1:
+            uid = slack.lookup_by_email(args[1])
+            if not uid:
+                die(f"no Slack user with the email {args[1]}")
+            print(uid)
+            return
+        if sub == "test-post" and len(args) > 1 and "--as-me" in args:
+            test_post_as_me(args[1])
+            return
+        if sub == "test-post" and len(args) > 1:
+            slack.post(args[1], "pr-pulse is connected. PR announcements will appear here.")
+            print(f"posted a test message to {args[1]}")
+            return
+        if sub == "whoami-user":
+            me = slack.user_identity()
+            print(json.dumps({k: me[k] for k in ("team", "user", "user_id", "scopes")}))
+            return
+        if sub == "check" and len(args) > 1:
+            slack.call("conversations.history", {"channel": args[1], "limit": 1})
+            print(f"ok: the bot can read {args[1]}")
+            return
+    except slack.SlackError as e:
+        msg = str(e)
+        tips = {"not_in_channel": "invite the bot: type /invite @pr-pulse in that channel",
+                "channel_not_found": "wrong channel id, or a private channel the bot was not invited to",
+                "missing_scope": "the app needs the reading scopes: run step 5 (manifest full) and reinstall",
+                "invalid_auth": "the token is wrong or was revoked: copy it again",
+                "users_not_found": "that email is not on this Slack workspace",
+                "PR_PULSE_SLACK_USER_TOKEN is not set": "run pr-pulse secret set user-token --from-clipboard"}
+        tip = next((v for k, v in tips.items() if k in msg), "")
+        die(f"Slack said: {msg}" + (f" — {tip}" if tip else ""))
+    die("usage: pr-pulse slack manifest-url|manifest|whoami|whoami-user|channels|whois|test-post [--as-me]|check …", 2)
+
+
+def test_post_as_me(channel):
+    """Post one message with the user token, then read it back with the bot, the way teammates'
+    pr-pulse will see it. It carries your app's bot_id (Slack adds that), but its user must be
+    you, a person: teammates then take your announcements as shares, and verdicts find them."""
+    try:
+        ts = slack.post(channel, "pr-pulse now posts as me. (test message)", as_="user")
+    except slack.SlackError as e:
+        if "not_in_channel" in str(e) or "channel_not_found" in str(e):
+            die(f"Slack said: {e} — you are not in that channel: join it in Slack, then retry")
+        raise
+    b = slack.call("conversations.history", {"channel": channel, "oldest": ts, "latest": ts,
+                                             "inclusive": "true", "limit": 1})
+    m = (b.get("messages") or [{}])[0]
+    me = read_config_file().get("slack_user_id") or ""
+    print(f"posted as you: ts {ts}; Slack shows user={m.get('user')} bot_id={m.get('bot_id') or '-'} "
+          f"subtype={m.get('subtype') or '-'}")
+    if not m or slack.from_a_bot(m) or (me and m.get("user") != me):
+        die("this post does not look like yours to other pr-pulse daemons (a bot user or another user id "
+            "wrote it). Keep post_as bot for now and tell the pr-pulse maintainer.")
+    print("ok: teammates' pr-pulse sees it as a message from you")
+
+
+REQUIRED_SKILLS = ("pr-review", "pr-feedback", "pr-merge")
+
+
+def missing_skills(con=None):
+    """pr-pulse runs /pr-review, /pr-feedback and /pr-merge: the user's own version, a plugin's, or
+    the repo's (.claude/skills). Returns {repo slug: [missing skills]} for mapped repos, or the
+    globally missing ones when no repo is mapped."""
+    repos = con.execute("SELECT slug, path FROM repos").fetchall() if con else []
+    if not repos:
+        return {"(any repo)": [s for s in REQUIRED_SKILLS if not core.skill_source(s)]}
+    return {r["slug"]: [s for s in REQUIRED_SKILLS if not core.skill_source(s, r["path"])] for r in repos}
+
+
+def skills_report(con):
+    """[(slug, {skill: source})] for status / doctor."""
+    out = []
+    for r in con.execute("SELECT slug, path FROM repos ORDER BY slug").fetchall():
+        out.append((r["slug"], {s: core.skill_source(s, r["path"]) for s in REQUIRED_SKILLS}))
+    return out
+
+
+def doctor_state(con):
+    envfile.load_into_environ()
+    env = envfile.read()
+    cfg = db.load_config()
+    running, _ = daemon_running()
+    st = {
+        "daemon_installed": PLIST.exists(),
+        "daemon_running": running,
+        "stopped": db.get_setting(con, "stopped", "0") == "1",
+        "cli_on_path": bool(shutil.which("pr-pulse")),
+        "repos_mapped": con.execute("SELECT COUNT(*) FROM repos").fetchone()[0],
+        "sessions_joined": con.execute("SELECT COUNT(*) FROM sessions WHERE registered=1 "
+                                       "AND status!='gone'").fetchone()[0],
+        "gh_logged_in": core.run(["gh", "auth", "status"]) is not None,
+        "bot_token_set": bool(env.get("PR_PULSE_SLACK_BOT_TOKEN")),
+        "user_token_set": bool(env.get("PR_PULSE_SLACK_USER_TOKEN")),
+        "post_as": slack.poster(cfg),
+        "slack_user": None,
+        "webhook_set": bool(env.get("PR_PULSE_SLACK_WEBHOOK_URL")),
+        "announce_channel": cfg.get("announce_channel") or "",
+        "watch_channels": cfg.get("watch_channels") or [],
+        "verdict_channel": cfg.get("verdict_channel") or "",
+        "slack_user_id": cfg.get("slack_user_id") or "",
+        "slack": None,
+        "verdict_style": cfg.get("verdict_style", "reply"),
+        "alerter": bool(shutil.which("alerter")),
+        "team_app": db.load_team(),
+        "skills_missing": {k: v for k, v in missing_skills(con).items() if v},
+        "marketplace": marketplace_name(),
+    }
+    st["autoupdate"] = autoupdate_on(st["marketplace"])
+    if st["bot_token_set"]:
+        try:
+            me = slack.identity()
+            st["slack"] = {"team": me["team"], "bot": me["bot"], "scopes": me["scopes"],
+                           "can_read": all(s in me["scopes"] for s in slack.READ_SCOPES),
+                           "can_react": slack.REACT_SCOPE in me["scopes"]}
+        except slack.SlackError as e:
+            st["slack"] = {"error": str(e)}
+    if st["user_token_set"]:
+        try:
+            u = slack.user_identity()
+            st["slack_user"] = {"user": u["user"], "user_id": u["user_id"], "scopes": u["scopes"],
+                                "matches": not st["slack_user_id"] or u["user_id"] == st["slack_user_id"]}
+        except slack.SlackError as e:
+            st["slack_user"] = {"error": str(e)}
+    st["step2_daemon"] = st["daemon_running"]
+    st["step3_map"] = st["repos_mapped"] > 0
+    token_ok = bool(st["slack"]) and "error" not in st["slack"]
+    st["token_ok"] = token_ok
+    st["step4_announce"] = bool((st["bot_token_set"] and token_ok and st["announce_channel"])
+                                or (st["webhook_set"] and not st["bot_token_set"]))
+    st["step5_read"] = bool(st["slack"] and st["slack"].get("can_read") and st["watch_channels"]
+                            and st["slack_user_id"])
+    return st
+
+
+CLAUDE_SETTINGS = Path(os.environ.get("PR_PULSE_CLAUDE_SETTINGS", str(Path.home() / ".claude" / "settings.json")))
+KNOWN_MARKETPLACES = Path.home() / ".claude" / "plugins" / "known_marketplaces.json"
+
+
+def marketplace_name():
+    """The marketplace pr-pulse was installed from (e.g. my-marketplace), or ''."""
+    root = current.installed_root()
+    if not root:
+        return ""   # not installed through Claude Code (a checkout, CI): no marketplace
+    try:
+        parts = Path(root).parts
+        return parts[parts.index("cache") + 1] if root and "cache" in parts else ""
+    except (ValueError, IndexError):
+        return ""
+
+
+def _read_json(p):
+    try:
+        return json.loads(Path(p).read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def autoupdate_on(name):
+    """Is Claude Code's auto-update on for that marketplace? The settings entry wins over the
+    toggle /plugin stores in known_marketplaces.json (Claude Code docs, plugins/loading)."""
+    if not name:
+        return False
+    entry = (_read_json(CLAUDE_SETTINGS).get("extraKnownMarketplaces") or {}).get(name) or {}
+    if "autoUpdate" in entry:
+        return bool(entry["autoUpdate"])
+    return bool((_read_json(KNOWN_MARKETPLACES).get(name) or {}).get("autoUpdate", False))
+
+
+def cmd_autoupdate(con, args):
+    """autoupdate [status] | autoupdate on : Claude Code's auto-update for pr-pulse's marketplace."""
+    name = marketplace_name()
+    if not name:
+        die("could not tell which marketplace pr-pulse came from")
+    sub = args[0] if args else "status"
+    if sub == "status":
+        print(f"auto-update for the {name} marketplace: {'on' if autoupdate_on(name) else 'off'}")
+        return
+    if sub != "on":
+        die("usage: pr-pulse autoupdate [status] | on", 2)
+    s = _read_json(CLAUDE_SETTINGS) if CLAUDE_SETTINGS.exists() else {}
+    if CLAUDE_SETTINGS.exists() and not s:
+        die(f"{CLAUDE_SETTINGS} could not be read as JSON; turn it on in /plugin → Marketplaces instead")
+    entry = s.setdefault("extraKnownMarketplaces", {}).setdefault(name, {})
+    if "source" not in entry:
+        src = (_read_json(KNOWN_MARKETPLACES).get(name) or {}).get("source")
+        if not src:
+            die(f"no source known for {name}; turn it on in /plugin → Marketplaces instead")
+        entry["source"] = src
+    entry["autoUpdate"] = True
+    if CLAUDE_SETTINGS.exists():
+        shutil.copy2(CLAUDE_SETTINGS, CLAUDE_SETTINGS.with_name(
+            f"settings.json.bak-pr-pulse-autoupdate-{time.strftime('%Y%m%d-%H%M%S')}"))
+    CLAUDE_SETTINGS.parent.mkdir(parents=True, exist_ok=True)
+    tmp = CLAUDE_SETTINGS.with_name("settings.json.pr-pulse-tmp")
+    tmp.write_text(json.dumps(s, indent=2) + "\n")
+    tmp.replace(CLAUDE_SETTINGS)
+    print(f"auto-update is ON for the {name} marketplace (every plugin from it). Claude Code updates "
+          f"them within ~10 minutes of a session's first message; open sessions load the update with "
+          f"/reload-plugins. The previous settings.json is backed up next to it.")
+
+
+def cmd_deps(con, args):
+    need = {"jq": "brew install jq", "gh": "brew install gh", "alerter": "brew install vjeantet/tap/alerter"}
+    missing = [n for n in need if not shutil.which(n)]
+    for n in need:
+        print(f"{'✓' if n not in missing else '·'} {n}" + ("" if n not in missing else f"  ({need[n]})"))
+    if "--install" in args and "alerter" in missing:
+        if not shutil.which("brew"):
+            die("Homebrew is not installed; install alerter by hand, or pr-pulse uses the macOS dialog")
+        rc = subprocess.call(["brew", "install", "vjeantet/tap/alerter"])
+        print("alerter installed" if rc == 0 and shutil.which("alerter") else
+              "alerter did not install; pr-pulse falls back to the macOS dialog")
+
+
+def cmd_doctor(con, args):
+    st = doctor_state(con)
+    if "--json" in args:
+        print(json.dumps(st, indent=2))
+        return
+    mark = lambda ok: "✓" if ok else "·"
+    print(f"{mark(st['step2_daemon'])} 2. daemon running" + (" (stopped: pr-pulse start)" if st["stopped"] else ""))
+    print(f"{mark(st['step3_map'])} 3. repos mapped: {st['repos_mapped']}; sessions joined: {st['sessions_joined']}")
+    print(f"{mark(st['step4_announce'])} 4. Slack announcements: "
+          + (("bot token → " + (st["announce_channel"] or "no channel yet")) if st["bot_token_set"] and st["token_ok"]
+             else ("token not accepted by Slack: " + (st["slack"] or {}).get("error", "?")) if st["bot_token_set"]
+             else ("webhook" if st["webhook_set"] else "not set up")))
+    s = st["slack"] or {}
+    print(f"{mark(st['step5_read'])} 5. Slack reading + verdicts: "
+          + ("ready" if st["step5_read"] else
+             ("token error: " + s["error"]) if s.get("error") else
+             "needs the reading scopes" if s and not s.get("can_read") else
+             "not set up" if not st["watch_channels"] else "missing your Slack id"))
+    u = st.get("slack_user") or {}
+    if st["post_as"] == "user":
+        print(("✓ posting as you: @" + u["user"]) if u and "error" not in u and u.get("matches") else
+              ("! post_as is user, but your user token belongs to " + u["user_id"] + ", not " + st["slack_user_id"])
+              if u and "error" not in u else
+              ("! post_as is user, but Slack refused your user token: " + u["error"] + " (/pr-pulse:init slack)")
+              if u else "! post_as is user, but no user token is saved: nothing is posted (/pr-pulse:init slack)")
+    elif st["bot_token_set"] or st["webhook_set"]:
+        print("· posting as the pr-pulse bot (to post as yourself: /pr-pulse:init slack)")
+    if st.get("verdict_style") == "emoji":
+        if s and not s.get("can_react"):
+            print("! verdict_style is emoji, but the Slack app can't add reactions: update its manifest "
+                  "(pr-pulse slack manifest full --copy), reinstall, then pr-pulse secret set bot-token "
+                  "--from-clipboard. Verdicts are replied in the thread until then.")
+        else:
+            print("· verdicts: emoji reactions (✅ ⚠️ 💬 ♻️) on the author's share and re-review messages")
+    if not st["gh_logged_in"]:
+        print("! gh is not logged in: run `gh auth login`")
+    for slug, srcs in skills_report(con):
+        print(f"  skills for {slug}: " + ", ".join(f"/{s} ({src or 'MISSING'})" for s, src in srcs.items()))
+    for slug, miss in st["skills_missing"].items():
+        print(f"! {slug}: no " + ", ".join("/" + s for s in miss)
+              + " (personal, plugin or in the repo); jobs needing them are skipped")
+    if not st["alerter"]:
+        print("· alerter missing: questions use the macOS dialog (pr-pulse deps --install)")
+    if st["marketplace"] and not st["autoupdate"]:
+        print(f"· auto-update is off for the {st['marketplace']} plugins: pr-pulse autoupdate on "
+              f"(or /pr-pulse:init) so fixes reach you without a manual update")
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help"):
+        print(__doc__.strip())
+        print(f"\nHow it all works: `pr-pulse help`, or {HERE.parent / 'README.md'}")
+        return
+    if argv[0] == "help":
+        text = (HERE.parent / "prompts" / "help.md").read_text()
+        print(text.replace("{{readme}}", str(HERE.parent / "README.md")).rstrip())
+        return
+    con = db.connect()
+    cmd, args = argv[0], argv[1:]
+    table = {
+        "status": cmd_status, "map": cmd_map, "tracks": cmd_tracks, "tick": cmd_tick,
+        "daemon": cmd_daemon,
+        "pause": lambda c, a: cmd_pause(c, a, "1"),
+        "resume": lambda c, a: cmd_pause(c, a, "0"),
+        "stop": cmd_stop, "start": cmd_start, "prune": cmd_prune,
+        "ask": cmd_ask, "questions": cmd_questions, "answer": cmd_answer,
+        "doctor": cmd_doctor, "deps": cmd_deps, "secret": cmd_secret, "slack": cmd_slack, "config": cmd_config,
+        "join": cmd_join, "leave": cmd_leave, "watch": cmd_watch, "spawn": cmd_spawn,
+        "job": cmd_job, "outbox": cmd_outbox, "inbox": lambda c, a: cmd_outbox(c, ["list"]),
+        "pr": cmd_pr, "focus": cmd_focus, "autoupdate": cmd_autoupdate, "rules": cmd_rules, "decisions": cmd_decisions, "forget": cmd_forget, "announce": cmd_announce, "auto-review": cmd_auto_review, "announces": cmd_announces,
+    }
+    if cmd not in table:
+        die(f"unknown command {cmd!r} (try pr-pulse --help)", 2)
+    table[cmd](con, args)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

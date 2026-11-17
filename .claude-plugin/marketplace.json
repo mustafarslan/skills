@@ -18,6 +18,18 @@
       "homepage": "https://github.com/mustafarslan/skills",
       "repository": "https://github.com/mustafarslan/skills",
       "license": "MIT"
+    },
+    {
+      "name": "pr-pulse",
+      "source": "./plugins/pr-pulse",
+      "description": "Runs your PR loop across Claude Code sessions: Slack announcements, reviews, feedback and merges. macOS only.",
+      "author": {
+        "name": "mustafarslan"
+      },
+      "homepage": "https://github.com/mustafarslan/skills",
+      "repository": "https://github.com/mustafarslan/skills",
+      "license": "MIT",
+      "category": "productivity"
     }
   ]
 }
