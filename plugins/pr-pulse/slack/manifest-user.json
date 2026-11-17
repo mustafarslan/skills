@@ -1,0 +1,20 @@
+{
+  "display_information": {
+    "name": "pr-pulse (me)",
+    "description": "Lets pr-pulse post PR announcements, review verdicts and reactions as me. It cannot read anything.",
+    "background_color": "#2c2d30"
+  },
+  "oauth_config": {
+    "scopes": {
+      "user": [
+        "chat:write",
+        "reactions:write"
+      ]
+    }
+  },
+  "settings": {
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": false,
+    "token_rotation_enabled": false
+  }
+}

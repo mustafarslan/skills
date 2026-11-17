@@ -312,7 +312,7 @@ current commit). Do not poll for the review.
 PR URL, mode, base; reviewers that ran / did not run and why; findings fixed and skipped; docs
 touched; checks run with results (from `commit`); reviewers requested; tracker changes; CI and
 bot outcome; AI review requested or not, and why. Once the PR is approved and green, the
-`pr-merge` skill (`/pr-merge`, slash command only) lands it — say so; never merge from here.
+`pr-merge` skill (`/pr-merge`) lands it — say so; never merge from here.
 
 ## Rules
 

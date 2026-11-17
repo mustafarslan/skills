@@ -1,0 +1,14 @@
+{
+  "_about": "Team defaults for pr-pulse. No secrets here: each person pastes the bot token during /pr-pulse:init. Fill in your own Slack IDs (see README, 'Recreate from scratch').",
+  "slack": {
+    "app": "pr-pulse",
+    "workspace": "your-workspace",
+    "bot": "@prpulse",
+    "token_source": "Your password manager: open the item \"pr-pulse Slack bot token\" and copy the token (ask your team's Slack admin for access if you can't see it)",
+    "announce_channel": "",
+    "watch_channels": [],
+    "verdict_channel": "",
+    "channel_names": {},
+    "github_to_slack": {}
+  }
+}
