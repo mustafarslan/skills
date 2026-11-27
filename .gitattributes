@@ -3,3 +3,6 @@
 *.py               text eol=lf
 skills/agy/scripts/agy-ask text eol=lf
 skills/park/scripts/park text eol=lf
+plugins/power-saver/scripts/power-saver text eol=lf
+# Windows PowerShell 5.1 scripts: CRLF on checkout, as Windows tools expect.
+plugins/power-saver/scripts/*.ps1 text eol=crlf

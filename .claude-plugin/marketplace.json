@@ -42,6 +42,18 @@
       "repository": "https://github.com/mustafarslan/skills",
       "license": "MIT",
       "category": "productivity"
+    },
+    {
+      "name": "power-saver",
+      "source": "./plugins/power-saver",
+      "description": "One switch for your PC's power: on for unattended work (builds, tests, AI agents: CPU boost off, each NVIDIA GPU at a share of its default power limit, screens dark, Windows Energy Saver on), off for full power when you're at the PC. Windows; any CPU; NVIDIA GPUs. Never touches network adapters.",
+      "author": {
+        "name": "mustafarslan"
+      },
+      "homepage": "https://github.com/mustafarslan/skills",
+      "repository": "https://github.com/mustafarslan/skills",
+      "license": "MIT",
+      "category": "productivity"
     }
   ]
 }

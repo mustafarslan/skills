@@ -1,0 +1,10 @@
+{
+  "name": "power-saver",
+  "version": "0.1.0",
+  "description": "One switch for your PC's power: `/power-saver on` for unattended work (builds, tests, AI agents: CPU boost off, each NVIDIA GPU at a share of its default power limit, screens dark, Windows Energy Saver on), `/power-saver off` for full power when you're at the PC. Windows; any CPU; NVIDIA GPUs (AMD and Intel GPUs are detected and skipped). Never touches network adapters.",
+  "author": { "name": "mustafarslan" },
+  "homepage": "https://github.com/mustafarslan/skills",
+  "repository": "https://github.com/mustafarslan/skills",
+  "license": "MIT",
+  "keywords": ["power", "gpu", "cpu", "nvidia", "windows", "unattended", "claude-code"]
+}

@@ -23,6 +23,7 @@
 | [system-design](skills/system-design/SKILL.md) | Designs, reviews and stress-tests systems at a staff-engineer bar: locks requirements and non-goals first, runs the capacity math in a script, defaults to the boring design, pushes back on steers that break a requirement, walks failure cascades, and ends with a trade-off table whose every row says when to change the decision. Modes for real designs (design doc + ADRs), mock interviews (as candidate or interviewer), reviews and deep dives. Its calculator also sizes restore time against RTO, LLM serving (tokens, cost, KV cache), stream partitions, cost from your prices, and the 10x/100x path; its gate rejects vague, strawman or already-fired triggers. `--walkthrough` adds an animated, step-by-step page of the design (brief, numbers, draft, what breaks, each fix, one failure walked hop by hop, trade-offs), checked against the doc and the calculator. Ships with a 19-case eval suite. |
 | [pr-pulse](plugins/pr-pulse/README.md) | **A separate plugin, macOS only.** Runs your PR loop across all your Claude Code sessions and repos: announces new PRs in Slack, runs `/pr-review`, `/pr-feedback` and `/pr-merge` in idle sessions or background workers, asks your decisions from macOS notifications, and posts nothing in your name until you have written your own top lines. |
 | [reclaim](plugins/reclaim/README.md) | **A separate plugin; macOS fully, worktrees also on Linux.** When the disk is full, `/reclaim` removes git worktrees you no longer need (backing up uncommitted work first and re-checking each one right before removal), gets a Docker Desktop that hung on a full disk running again, and prunes old Docker data. Asks before every removal, never touches Docker volumes, and needs only `git` and `python3`. |
+| [power-saver](plugins/power-saver/README.md) | **A separate plugin, Windows only.** `/power-saver on` when you leave the PC to unattended work (builds, tests, AI agents): CPU boost off, each NVIDIA GPU at a share of its default power limit, the screens dark and Windows Energy Saver on, so the work keeps going, only slower. `/power-saver off` gives full power back with the exact plan you had before. Works on any CPU; AMD and Intel GPUs are detected and skipped. Reports each lever as applied, skipped or failed, and never touches network adapters. |
 
 The PR skills and `bugfix` need the [GitHub CLI](https://cli.github.com/) (`gh`), authenticated. `bugfix` reads the issue from whichever tracker is connected to Claude Code (Jira, Linear, and so on), falling back to GitHub Issues.
 
@@ -46,6 +47,8 @@ The git skills (`rebase`, `commit`, `pr-merge`, `pr-upsert`) work in any reposit
 
 `park` needs `python3` and `git`, and either macOS with Terminal.app or Windows with Windows Terminal (and Git Bash, for Claude's Bash tool). On the Mac, the first `/park` asks macOS to let Claude control Terminal (System Settings → Privacy & Security → Automation); Windows needs no permission. Its store and patches live in `~/.claude/park/` and are kept 30 days. What comes back and what doesn't: [skills/park/references/usage.md](skills/park/references/usage.md).
 
+`power-saver` is its own plugin in [plugins/power-saver/](plugins/power-saver/), installed separately (below). It needs Windows, Python 3.9+ and Git Bash, and one UAC prompt for `/power-saver:setup`, which installs a SYSTEM task that applies the GPU limits. Details and the security model: [plugins/power-saver/README.md](plugins/power-saver/README.md).
+
 `pr-pulse` is its own plugin in [plugins/pr-pulse/](plugins/pr-pulse/), installed separately (below). It needs macOS, `gh` (logged in), `jq`, `curl` and `python3`, and runs a background service under launchd; Slack is optional. It hands each job to this repo's `/pr-review`, `/pr-feedback` or `/pr-merge` (your own versions win), and `pr-pulse doctor` names any that are missing. Setup with `/pr-pulse:init`: [plugins/pr-pulse/README.md](plugins/pr-pulse/README.md).
 
 `spm` needs `python3` (3.9+) and its `spm-red-team` agent. The word trigger ("spm" in a prompt) is opt-in, because it is a prompt hook: [skills/spm/references/install.md](skills/spm/references/install.md).
@@ -59,6 +62,7 @@ Plugin marketplace (all skills and agents):
 /plugin install skills@mustafarslan-skills
 /plugin install pr-pulse@mustafarslan-skills   # optional, macOS: the pr-pulse plugin
 /plugin install reclaim@mustafarslan-skills    # optional: free disk space (old worktrees, Docker)
+/plugin install power-saver@mustafarslan-skills  # optional, Windows: the CPU and GPU power switch
 ```
 
 Or copy one skill:

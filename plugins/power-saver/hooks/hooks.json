@@ -1,0 +1,10 @@
+{
+  "description": "power-saver: say at session start when unattended-work mode is on (builds and tests run slower)",
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [
+        { "type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}\"/scripts/mode-line.sh", "timeout": 10 }
+      ] }
+    ]
+  }
+}
