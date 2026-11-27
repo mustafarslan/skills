@@ -77,6 +77,16 @@ In Docker, reclaim removes unused images and build cache older than your number 
 you pick that have been stopped that long or are stuck restarting. Containers on your keep-list are never
 offered. **Volumes are never removed**: they hold your databases.
 
+**Docker's disk file.** A prune frees space inside Docker's disk image, which is not always space on your
+drive. reclaim shows the file's size next to what Docker says it holds:
+
+- macOS: `Docker.raw` is sparse, so it gives space back by itself; reclaim only reports it.
+- Windows: `docker_data.vhdx` (or the older `ext4.vhdx`) only grows. `docker compact` shrinks it, with
+  Docker Desktop quit, after checking that nothing holds the file, in one UAC prompt (`Optimize-VHD`, or
+  `diskpart` without the Hyper-V tools). It asks before stopping Docker's WSL distro, and again, naming
+  your other distros, before `wsl --shutdown`. It never runs while Docker is starting or a build runs.
+  Until it has run live once on a Windows PC, reclaim only reports the size there.
+
 ## Which repos it cleans
 
 You can list repos one by one, or give whole folders. Both work together.

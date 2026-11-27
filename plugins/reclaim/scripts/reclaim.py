@@ -8,6 +8,9 @@
   docker restart-hung                 kill a Docker Desktop hung after a full disk, relaunch it
   docker prune [--days N]             unused images + build cache older than N days
   docker rm NAME...                   remove stale containers (never volumes), then their images
+  docker disk                         Docker's disk image on the host: its size against what Docker holds
+  docker compact [--release] [--shutdown-wsl] [--dry-run]
+                                      Windows: shrink Docker's VHDX (Docker quit; one UAC prompt)
   config show | set KEY VALUE | detect | detect-roots | preview
 """
 import argparse
@@ -21,6 +24,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import backup as backup_mod  # noqa: E402
 import docker  # noqa: E402
 import plat  # noqa: E402
+import vdisk  # noqa: E402
 import worktrees  # noqa: E402
 from common import VALIDATORS, emit, free_bytes, gb, git, load_config, save_config  # noqa: E402
 
@@ -105,11 +109,16 @@ def main(argv=None):
     b = sub.add_parser('backup')
     b.add_argument('path')
     d = sub.add_parser('docker')
-    d.add_argument('action', choices=['status', 'restart-hung', 'prune', 'rm'])
+    d.add_argument('action', choices=['status', 'restart-hung', 'prune', 'rm', 'disk', 'compact'])
     d.add_argument('names', nargs='*')
     d.add_argument('--days', type=float)
     d.add_argument('--first-live-run', action='store_true',
                    help='Windows: run a step that has not run live on Windows yet, once, with its owner watching')
+    d.add_argument('--release', action='store_true',
+                   help="compact: stop Docker's own WSL distro first (wsl --terminate), after the user said yes")
+    d.add_argument('--shutdown-wsl', action='store_true',
+                   help='compact: run wsl --shutdown (stops every distro) if the disk is still held, after a yes')
+    d.add_argument('--dry-run', action='store_true', help='compact: check everything, change nothing')
     d.add_argument('--prune-images', action='store_true',
                    help='with rm: also prune old unused images afterwards (only after the user approved it)')
     c = sub.add_parser('config')
@@ -141,6 +150,11 @@ def main(argv=None):
             emit(docker.restart_hung(first_live_run=a.first_live_run))
         elif a.action == 'prune':
             emit(docker.prune(days))
+        elif a.action == 'disk':
+            emit(vdisk.report())
+        elif a.action == 'compact':
+            emit(vdisk.compact(first_live_run=a.first_live_run, release=a.release, shutdown_wsl=a.shutdown_wsl,
+                               dry_run=a.dry_run))
         elif a.action == 'rm':
             if not a.names:
                 emit({'error': 'name the containers to remove'})

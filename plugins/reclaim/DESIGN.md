@@ -280,6 +280,31 @@ facts), and the step refuses unless it is given `--first-live-run`. The skill ne
 owner runs each step once by hand, watching, and then sets its entry to True in a commit that records what
 the log said.
 
+## 9c. Docker's disk file (0.4.0, `scripts/vdisk.py`, `scripts/compact.ps1`)
+
+`docker disk` lists Docker's disk images with their size and their real size on disk (`st_blocks` on
+macOS, `GetCompressedFileSizeW` on Windows), next to the sum of `docker system df`'s sizes when Docker is up.
+
+- **macOS**: `Docker.raw` (from `settings-store.json`'s `DataFolder`, else the default) is sparse on APFS, so
+  there is nothing to compact; the report says so.
+- **Windows**: `docker_data.vhdx`, or `ext4.vhdx` in older versions, under `%LOCALAPPDATA%\Docker\wsl\` or
+  the `CustomWslDistroDir` of Docker's settings. `docker compact` refuses unless every one of these holds,
+  in this order, and changes nothing until they do:
+  1. the step has run live once (`LIVE_ON_WINDOWS['compact']`), or `--first-live-run`;
+  2. no Docker Desktop process (by path) and no `docker`, `docker-compose` or `docker-buildx` command runs:
+     not while Docker is starting or a build runs;
+  3. Docker's own WSL distros are stopped, or `--release` (the user said yes) stops them with
+     `wsl --terminate`;
+  4. the VHDX opens with no sharing (nothing holds it), or `--shutdown-wsl` (a second yes, after the user
+     was told which other distros run) runs `wsl --shutdown`, and then it must open;
+  5. one elevated PowerShell runs `compact.ps1`: `Optimize-VHD -Mode Full` if the Hyper-V tools are there,
+     else `diskpart` (`attach vdisk readonly`, `compact vdisk`, and `detach vdisk` in a `finally`). It writes
+     a JSON result to a file that reclaim reads back; no file is a failure, never a success (power-saver
+     0.1.0 lost its elevated reply because it read stdout).
+- **Sparse mode is left out.** WSL 3.0.5 lists `wsl --manage <distro> --set-sparse true` (no `--allow-unsafe`
+  in its help), but it targets a distro's own disk, and Docker's data disk is a separate VHDX. It has not been
+  tried on one, so reclaim doesn't offer it.
+
 ## 10. Extension point: paused sessions
 
 `worktrees.parked_folders()` returns `None` in this version, so the check is skipped and the scan reports
@@ -438,4 +463,4 @@ choosing the disk to check from the repos' volume (it checks `/`).
 - Removing a worktree removes the folder only. Branches stay, so delete merged branches separately if
   you want.
 - Docker's own disk image (`Docker.raw`) doesn't shrink on the spot after a prune. Docker Desktop
-  reclaims the space over time.
+  reclaims the space over time. On Windows the VHDX needs `docker compact` (9c).

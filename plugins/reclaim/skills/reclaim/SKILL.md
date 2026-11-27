@@ -1,6 +1,6 @@
 ---
 name: reclaim
-description: Free disk space on this computer (macOS or Windows) - remove old git worktrees and ones whose PR merged (backing up uncommitted work first), bring back a Docker Desktop that hung after the disk filled, and prune old Docker images, build cache and stale containers. Use when the user says "/reclaim", "free up space", "disk is full", "clean old worktrees", "delete old docker images", "Docker won't start, no space left on device", or when the reclaim low-disk warning appears. Flags --days N, --dry-run, --no-merged, --worktrees-only, --docker-only.
+description: Free disk space on this computer (macOS or Windows) - remove old git worktrees and ones whose PR merged (backing up uncommitted work first), bring back a Docker Desktop that hung after the disk filled, prune old Docker images, build cache and stale containers, and show (on Windows, shrink) Docker's disk file. Use when the user says "/reclaim", "free up space", "disk is full", "clean old worktrees", "delete old docker images", "Docker won't start, no space left on device", or when the reclaim low-disk warning appears. Flags --days N, --dry-run, --no-merged, --worktrees-only, --docker-only.
 allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/reclaim *), AskUserQuestion
 ---
 
@@ -66,6 +66,17 @@ shows every table, and asks nothing and removes nothing.
    Run `R docker rm NAME...` with the chosen names. Add `--prune-images` only if the user already said yes
    to pruning images in step 3; if they declined that, leave it off. Report each result. A `failed` row
    whose `why` says the container is running means it was started again since the check: leave it.
+5. **Docker's disk file.** Run `R docker disk` (after any prune, so the numbers are current). Show each disk's
+   `on_disk` size next to `inside.used` (what Docker says it holds), in GB.
+   - macOS: say in one line that `Docker.raw` is sparse and gives space back by itself after a prune.
+   - Windows, `compact.verified_on_windows` false: show the sizes and say that reclaim only reports Docker's
+     disk on Windows for now; it does not compact it yet. Don't run `R docker compact`.
+   - Windows, `compact.verified_on_windows` true and `compact.about_free` over 1 GB: ask "Shrink Docker's
+     disk file (about X GB back)? Docker Desktop must be quit first, and Windows asks for admin once." On
+     yes, run `R docker compact`. If it answers `needs: release`, ask "Stop Docker's WSL distro (`<running>`)?"
+     and on yes run it again with `--release`. If it answers `needs: shutdown`, ask "Shut WSL down? It also
+     stops `<other_running>`." and on yes add `--shutdown-wsl`. If it says `not now`, show its `why` and stop.
+     Report `freed`.
 
 Volumes are never removed by reclaim. If the user asks for that, show `docker system df -v` volume
 sizes and let them run `docker volume rm` themselves, after they confirm which ones.
@@ -85,3 +96,4 @@ Then one line on what was kept and why, for the largest kept groups only.
 - Remove a row whose verdict is `keep`, or re-run `remove` with a path that came back `skipped`.
 - Remove anything with a `--dry-run`.
 - Touch Docker volumes, or a container on the keep-list (`R config show` → `keep_containers`).
+- Pass `--first-live-run`. It exists for the tool's owner to run a Windows step once by hand, never for this skill.
