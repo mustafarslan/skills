@@ -28,7 +28,7 @@ def main():
     if not cfg['configured'] or cfg['hook'] is False:
         return
     warn = cfg['warn_gb']
-    free = gb(free_bytes('/'))
+    free = gb(free_bytes(os.path.splitdrive(str(Path.home()))[0] + os.sep if os.name == 'nt' else '/'))
     if free >= warn:
         return
     stamp = data / 'last-warning'

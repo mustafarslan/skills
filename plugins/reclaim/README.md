@@ -1,8 +1,8 @@
 # reclaim
 
-**Claude Code only. macOS fully; the worktree half also runs on Linux (less tested).**
+**Claude Code only. macOS and Windows; the worktree half also runs on Linux (less tested).**
 
-When your Mac runs out of disk, run `/reclaim`. It removes the git worktrees you no longer need and old
+When your computer runs out of disk, run `/reclaim`. It removes the git worktrees you no longer need and old
 Docker data. If Docker Desktop crashed because the disk filled up, it gets Docker running again. It asks
 before every removal, and it backs up any work that isn't committed first.
 
@@ -17,15 +17,15 @@ Then run `/reload-plugins` and `/reclaim:init`.
 
 ## What you need, and what happens without it
 
-Only `git` and `python3` are required. Everything else is optional, and a missing piece makes reclaim more
+Only `git` and Python 3.9+ (`python3`, `python` or `py`) are required. Everything else is optional, and a missing piece makes reclaim more
 careful or skips that part. It never makes it bolder, and it says so in the scan result.
 
 | Missing | What reclaim does |
 |---|---|
 | `gh`, or not logged in | Scans on age and unpushed commits only, and tells you PRs were not checked. A `gh` that works but fails on one branch keeps that worktree |
-| `lsof` (macOS) | Keeps every worktree, because it cannot tell which are in use. On Linux it reads `/proc` instead |
+| `lsof` (macOS) | Keeps every worktree, because it cannot tell which are in use. On Linux it reads `/proc` instead; on Windows it asks Windows itself (no tool needed) |
 | Docker | Skips the Docker half with one line |
-| macOS | The Docker revival (`open -a Docker`, Docker Desktop's log) is macOS only; worktrees work anywhere git does |
+| Windows | Works without Git Bash's Unix tools. The Docker revive only reports until it has run live once on a Windows PC (DESIGN.md, 9b) |
 | `jq` | Not needed. The start-of-session warning is plain Python |
 | The reviewing tools used to build the plugin (`agy`, the advisor) | Not used at run time. reclaim depends on none of them |
 

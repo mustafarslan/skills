@@ -1,6 +1,6 @@
 ---
 name: reclaim
-description: Free disk space on this Mac - remove old git worktrees and ones whose PR merged (backing up uncommitted work first), bring back a Docker Desktop that hung after the disk filled, and prune old Docker images, build cache and stale containers. Use when the user says "/reclaim", "free up space", "disk is full", "clean old worktrees", "delete old docker images", "Docker won't start, no space left on device", or when the reclaim low-disk warning appears. Flags --days N, --dry-run, --no-merged, --worktrees-only, --docker-only.
+description: Free disk space on this computer (macOS or Windows) - remove old git worktrees and ones whose PR merged (backing up uncommitted work first), bring back a Docker Desktop that hung after the disk filled, and prune old Docker images, build cache and stale containers. Use when the user says "/reclaim", "free up space", "disk is full", "clean old worktrees", "delete old docker images", "Docker won't start, no space left on device", or when the reclaim low-disk warning appears. Flags --days N, --dry-run, --no-merged, --worktrees-only, --docker-only.
 allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/reclaim *), AskUserQuestion
 ---
 
@@ -52,7 +52,11 @@ shows every table, and asks nothing and removes nothing.
      processes (pids …) and start Docker again?" On yes, run `R docker restart-hung`, then
      `R docker status` again.
    - `down.hung` false: say Docker isn't running and the reason isn't a full disk; tell the user to
-     start it from the menu bar. Skip the rest of this section.
+     start Docker Desktop (the menu bar on a Mac, the Start menu on Windows). Skip the rest of this section.
+   - On Windows, `down.hung` stays false until the revive has run live once there; if
+     `down.hung_suspected` is true, say Docker looks hung after a full disk, list `down.pids`, and tell the
+     user to quit Docker Desktop and start it again themselves. Never run `R docker restart-hung` with
+     `--first-live-run`: that flag is for the tool's owner's one supervised run, not for this skill.
 3. From `df`, show the reclaimable space for Images and Build Cache. Ask: "Prune unused images and build
    cache older than N days (about X GB)?" On yes, run `R docker prune --days N` and report both
    `reclaimed` values.

@@ -1,11 +1,11 @@
 """Shared helpers: running commands, the config file, free disk space."""
 import json
 import os
-import shutil
-import subprocess
 import sys
 import time
 from pathlib import Path
+
+import plat
 
 # Folders that are rebuilt from scratch, so their age and contents never matter.
 BUILD_DIRS = {
@@ -77,19 +77,13 @@ def write_atomic(path, text):
 
 def run(cmd, cwd=None, check=False, timeout=120):
     """Run a command; return (returncode, stdout, stderr). Never raises for a missing binary."""
-    try:
-        p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
-    except FileNotFoundError as exc:
-        return 127, '', str(exc)
-    except subprocess.TimeoutExpired:
-        return 124, '', f'timed out after {timeout}s: {" ".join(cmd)}'
-    if check and p.returncode != 0:
-        raise RuntimeError(f'{" ".join(cmd)} failed: {p.stderr.strip()}')
-    return p.returncode, p.stdout, p.stderr
+    return plat.run(cmd, cwd=cwd, check=check, timeout=timeout)
 
 
 def git(path, *args, timeout=120):
-    return run(['git', '-C', str(path), *args], timeout=timeout)
+    # Windows: paths past 260 characters (deep node_modules) work only with core.longpaths.
+    extra = ['-c', 'core.longpaths=true'] if plat.WINDOWS else []
+    return run(['git', '-C', str(path), *extra, *args], timeout=timeout)
 
 
 def _is_num(v):
@@ -140,7 +134,7 @@ def save_config(cfg):
 
 
 def free_bytes(path='/'):
-    return shutil.disk_usage(path).free
+    return plat.free_bytes(path)
 
 
 def gb(n):
@@ -148,9 +142,8 @@ def gb(n):
 
 
 def du_bytes(path):
-    """Size on disk via du (fast, follows the real block count)."""
-    rc, out, _ = run(['du', '-sk', str(path)], timeout=600)
-    return int(out.split()[0]) * 1024 if rc == 0 and out else 0
+    """Size on disk (du on macOS and Linux; a walk that never follows a junction on Windows)."""
+    return plat.dir_size(path)
 
 
 def now():

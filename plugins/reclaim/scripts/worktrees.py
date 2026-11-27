@@ -12,6 +12,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import plat
 from common import BUILD_DIRS, du_bytes, git, home, now, run, write_atomic
 
 SCAN_FILE = 'last-scan.json'
@@ -30,7 +31,7 @@ def list_worktrees(repo):
         lines = block.strip().splitlines()
         if not lines or not lines[0].startswith('worktree ') or 'bare' in lines[1:]:
             continue  # a bare repo's own folder is not a checkout
-        paths.append(lines[0][9:])
+        paths.append(plat.native(lines[0][9:]))  # git prints C:/x on Windows
     return [(p, i == 0) for i, p in enumerate(paths)]  # the first checkout is kept as "main"
 
 
@@ -84,7 +85,8 @@ def find_repos(roots, depth=2, max_dirs=2000):
                 if e.name.startswith('.') or e.name in BUILD_DIRS:
                     continue
                 try:
-                    if e.is_dir(follow_symlinks=False) and os.stat(e.path).st_dev == dev:
+                    if e.is_dir(follow_symlinks=False) and not plat.is_link_or_junction(e.path) and (
+                            os.stat(e.path).st_dev == dev):
                         stack.append((e.path, level + 1))
                 except OSError:
                     continue
@@ -139,27 +141,27 @@ def nested_checkouts(path):
     """Other repos or worktrees anywhere inside this tree. Removing the tree would delete them too
     (git removes ignored content without --force), whatever their own state."""
     found = []
-    for root, dirs, files in os.walk(path):
+    for root, dirs, files in plat.walk(path):
         if root != path and ('.git' in dirs or '.git' in files):
-            found.append(os.path.relpath(root, path))
+            found.append(plat.rel(root, path))
             dirs[:] = []
             continue
         for d in [d for d in dirs if d in BUILD_DIRS and d != '.git']:
             # Don't walk a build folder's bulk, but a checkout can sit just inside one (dist/proj).
-            found.extend(os.path.relpath(r, path) for r in _repos_inside(os.path.join(root, d), depth=3))
+            found.extend(plat.rel(r, path) for r in _repos_inside(os.path.join(root, d), depth=3))
         dirs[:] = [d for d in dirs if d not in BUILD_DIRS]
     return found
 
 
 def _repos_inside(top, depth=6):
     """Roots of git checkouts (repos or worktrees) under top, not descending into them."""
-    found, base = [], top.rstrip('/').count('/')
-    for root, dirs, files in os.walk(top):
+    found, base = [], plat.depth(plat.strip_sep(top))
+    for root, dirs, files in plat.walk(top):
         if '.git' in dirs or '.git' in files:
             found.append(root)
             dirs[:] = []
             continue
-        if root.count('/') - base >= depth:
+        if plat.depth(root) - base >= depth:
             dirs[:] = []
         else:
             dirs[:] = [d for d in dirs if d not in BUILD_DIRS]
@@ -174,8 +176,8 @@ def recent_edit(path, cutoff, entries):
     """
     for entry in entries:
         top = os.path.join(path, entry)
-        if os.path.isdir(top) and not os.path.islink(top):
-            for root, dirs, files in os.walk(top):
+        if os.path.isdir(top) and not plat.is_link_or_junction(top):
+            for root, dirs, files in plat.walk(top):
                 dirs[:] = [d for d in dirs if d not in BUILD_DIRS]
                 for name in files:
                     f = os.path.join(root, name)
@@ -241,7 +243,11 @@ def process_cwds():
     """cwd of every running process this user can see (/proc on Linux, else one lsof call).
 
     None when neither works or nothing came back: nobody can then say a tree is unused.
+    Windows has neither: there the in-use probe in in_use() decides, and this map (read from this user's
+    processes) only names who is in a folder.
     """
+    if plat.WINDOWS:
+        return plat.windows_cwds()
     if sys.platform.startswith('linux'):
         found = _proc_cwds()
         if found is not None:
@@ -262,7 +268,16 @@ def in_use(path, cwds):
     if cwds is None:
         return None
     real = os.path.realpath(path)
-    return sorted({c for d, cs in cwds.items() if d == real or d.startswith(real + '/') for c in cs})
+    names = sorted({c for d, cs in cwds.items() if plat.same_or_inside(d, real) for c in cs})
+    if plat.WINDOWS:
+        # The deciding check: a folder some process sits in can't be opened exclusively. It sees processes
+        # of every user, elevated ones too; the map above only puts names to them.
+        busy = plat.busy_dirs(path)
+        if busy is None:
+            return None
+        if busy and not names:
+            names = [f'another process (folder {busy[0]} is open)']
+    return names
 
 
 def parked_folders():
@@ -297,7 +312,7 @@ def pr_facts(path, branch):
         rc, out, _ = run(['gh', 'pr', 'list', '--head', branch, '--state', 'all', '--limit', '30',
                           '--json', 'number,state,headRefOid'], cwd=path, timeout=60)
     else:
-        m = re.search(r'-(\d+)$', os.path.basename(path.rstrip('/')))
+        m = re.search(r'-(\d+)$', plat.base_name(path))
         if not m:
             return []
         rc, out, _ = run(['gh', 'pr', 'view', m.group(1), '--json', 'number,state,headRefOid'],
@@ -315,9 +330,9 @@ def _ignored_stamp(path, entry):
     """Size and mtime of an ignored file, or count, total size and newest mtime of an ignored folder."""
     full = os.path.join(path, entry)
     try:
-        if os.path.isdir(full) and not os.path.islink(full):
+        if os.path.isdir(full) and not plat.is_link_or_junction(full):
             n = size = newest = 0
-            for root, dirs, files in os.walk(full):
+            for root, dirs, files in plat.walk(full):
                 dirs[:] = [d for d in dirs if d not in BUILD_DIRS]
                 for name in files:
                     try:
@@ -395,7 +410,7 @@ def fingerprint(path, head, status, ignored):
 def inspect(path, is_main, cutoff, cwds, parked, with_prs=True, current=None):
     row = {'path': path, 'main': is_main}
     if not os.path.isdir(path):
-        parent = os.path.dirname(path.rstrip('/'))
+        parent = os.path.dirname(plat.strip_sep(path))
         if not os.path.isdir(parent) or not os.listdir(parent):
             # The parent is gone, or an empty mount point: more likely an unplugged disk than a deleted worktree.
             row.update(verdict='keep', reasons=['folder and its parent are missing or empty (unplugged disk?)'])
@@ -438,13 +453,14 @@ def inspect(path, is_main, cutoff, cwds, parked, with_prs=True, current=None):
     real = os.path.realpath(path)
     if is_main:
         keep.append('main checkout')
-    if current and (current == real or current.startswith(real + '/')):
+    if current and plat.same_or_inside(current, real):
         keep.append('this session runs here')
     if row['in_use'] is None:
-        keep.append('could not list running processes (lsof)')
+        keep.append('could not check which processes use it' if plat.WINDOWS else
+                    'could not list running processes (lsof)')
     elif row['in_use']:
         keep.append('in use by ' + ', '.join(row['in_use'][:3]))
-    if parked is not None and any(p == real or p.startswith(real + '/') for p in parked):
+    if parked is not None and any(plat.same_or_inside(p, real) for p in parked):
         keep.append('a parked session will resume here')
     if open_prs:
         keep.append('open PR #' + ', #'.join(map(str, open_prs)))
@@ -497,7 +513,8 @@ def scan(repos, days, merged=True, current=None, with_size=True, warnings=None):
     if gh_ok is None:
         warnings.append(f'PRs were not checked ({gh_why}): the verdicts use age and unpushed commits only')
     if cwds is None:
-        warnings.append('running processes could not be listed (no lsof or /proc): every worktree is kept')
+        warnings.append('running processes could not be checked: every worktree is kept' if plat.WINDOWS else
+                        'running processes could not be listed (no lsof or /proc): every worktree is kept')
     trees = []
     for repo in repos:
         listed = list_worktrees(repo)
@@ -578,7 +595,37 @@ def _remove_one(path, before, last, cwds, parked, backup_dir, backup_fn):
                     'backup': backup.get('dir')}
         if now_row['tracked'] or now_row['untracked']:
             force = ['--force']  # only after a verified backup that still matches the tree
+    if plat.WINDOWS:
+        # Windows can't delete a file another process has open: a delete would stop partway. Check every
+        # file first and keep the tree whole when one is held.
+        held = plat.held_files(path)
+        if held is None:
+            return {'path': path, 'result': 'skipped', 'why': 'could not check for files other programs hold open',
+                    'backup': backup and backup.get('dir')}
+        if held['count']:
+            who = ', '.join(held['by'][:3]) or 'another program'
+            return {'path': path, 'result': 'skipped', 'backup': backup and backup.get('dir'),
+                    'why': f"locked by {who}: {held['count']} file(s) held open, first {held['files'][0]}"}
     rc, _, err = git(before['repo'], 'worktree', 'remove', *force, path, timeout=600)
     if rc != 0:
-        return {'path': path, 'result': 'failed', 'why': err.strip(), 'backup': backup and backup.get('dir')}
+        return _partial(path, {'path': path, 'result': 'failed', 'why': err.strip(),
+                               'backup': backup and backup.get('dir')})
+    if plat.WINDOWS and os.path.lexists(path):
+        # git leaves a junction (and the folders above it) behind: it never follows one, nor removes it.
+        # Remove those links and the folders they leave empty, never entering a link; any real file stays.
+        plat.delete_tree(path, files=False)
+        if os.path.lexists(path):
+            return _partial(path, {'path': path, 'result': 'failed', 'why': 'git removed the worktree but not all '
+                                   'of its folder', 'backup': backup and backup.get('dir')})
     return {'path': path, 'result': 'removed', 'backup': backup and backup.get('dir')}
+
+
+def _partial(path, row):
+    """A removal that stopped partway: say exactly what is left. Commits stay in git and the uncommitted work
+    is in the backup; nothing can be put back into the folder from it, so say that too."""
+    if os.path.isdir(path):
+        left = [f for _, _, files in plat.walk(path) for f in files]
+        row['left'] = {'files': len(left), 'folder': path}
+        row['safe'] = 'the commits are in git' + (
+            ' and the uncommitted work is in the backup' if row.get('backup') else '')
+    return row

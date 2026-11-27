@@ -1,3 +1,14 @@
 #!/bin/sh
 # reclaim CLI: see reclaim.py for the commands.
-exec python3 "$(dirname "$0")/reclaim.py" "$@"
+# The first Python 3.9+ that actually runs: on Windows `python3` may be missing, or the Microsoft Store's stub.
+here=$(dirname "$0")
+for py in python3 python; do
+  if "$py" -c "import sys; sys.exit(sys.version_info < (3, 9))" >/dev/null 2>&1; then
+    exec "$py" "$here/reclaim.py" "$@"
+  fi
+done
+if py -3 -c "import sys; sys.exit(sys.version_info < (3, 9))" >/dev/null 2>&1; then
+  exec py -3 "$here/reclaim.py" "$@"
+fi
+echo "reclaim needs Python 3.9 or newer on PATH (python3, python or py)" >&2
+exit 127

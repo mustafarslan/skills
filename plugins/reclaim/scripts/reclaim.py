@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import backup as backup_mod  # noqa: E402
 import docker  # noqa: E402
+import plat  # noqa: E402
 import worktrees  # noqa: E402
 from common import VALIDATORS, emit, free_bytes, gb, git, load_config, save_config  # noqa: E402
 
@@ -30,7 +31,7 @@ def detect_repos(limit=300):
     files = sorted(projects.glob('*/*.jsonl'), key=lambda p: p.stat().st_mtime, reverse=True)[:limit]
     cwds = set()
     for f in files:
-        with open(f, errors='replace') as fh:
+        with open(f, encoding='utf-8', errors='replace') as fh:
             for _, line in zip(range(40), fh):
                 if '"cwd"' in line:
                     try:
@@ -52,6 +53,7 @@ def detect_repos(limit=300):
         # A bare repo's git dir is the repo itself; otherwise the main checkout is the git dir's parent.
         main = common_dir if (rc == 0 and bare.strip() == 'true') or not common_dir.endswith('/.git') \
             else os.path.dirname(common_dir)
+        main = plat.native(main)  # git prints C:/x on Windows
         if main not in repos:
             repos[main] = len(worktrees.list_worktrees(main))
     return [{'repo': r, 'worktrees': n} for r, n in sorted(repos.items(), key=lambda x: -x[1])]
@@ -61,7 +63,7 @@ def detect_roots(repos):
     """Folders that hold the detected repos, most repos first: the candidates for 'scan whole folders'."""
     counts = {}
     for r in repos:
-        parent = os.path.dirname(r['repo'].rstrip('/'))
+        parent = os.path.dirname(plat.strip_sep(r['repo']))
         counts[parent] = counts.get(parent, 0) + 1
     return [{'root': p, 'repos': n} for p, n in sorted(counts.items(), key=lambda x: (-x[1], x[0]))]
 
@@ -83,6 +85,13 @@ def resolve_repos(repos, roots):
     return out, warns
 
 
+def system_root():
+    """'/' on macOS and Linux, as before; on Windows the drive that holds the home folder."""
+    if not plat.WINDOWS:
+        return '/'
+    return os.path.splitdrive(str(Path.home()))[0] + os.sep
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog='reclaim')
     sub = ap.add_subparsers(dest='cmd', required=True)
@@ -99,6 +108,8 @@ def main(argv=None):
     d.add_argument('action', choices=['status', 'restart-hung', 'prune', 'rm'])
     d.add_argument('names', nargs='*')
     d.add_argument('--days', type=float)
+    d.add_argument('--first-live-run', action='store_true',
+                   help='Windows: run a step that has not run live on Windows yet, once, with its owner watching')
     d.add_argument('--prune-images', action='store_true',
                    help='with rm: also prune old unused images afterwards (only after the user approved it)')
     c = sub.add_parser('config')
@@ -111,7 +122,7 @@ def main(argv=None):
     days = cfg['days'] if given is None else given  # --days 0 is a real value
 
     if a.cmd == 'df':
-        emit({'free_gb': gb(free_bytes('/'))})
+        emit({'free_gb': gb(free_bytes(system_root()))})
     elif a.cmd == 'scan':
         repos, warns = resolve_repos(a.repo or cfg['repos'], [] if a.repo else cfg['roots'])
         if not repos:
@@ -127,7 +138,7 @@ def main(argv=None):
         if a.action == 'status':
             emit(docker.status(days, keep))
         elif a.action == 'restart-hung':
-            emit(docker.restart_hung())
+            emit(docker.restart_hung(first_live_run=a.first_live_run))
         elif a.action == 'prune':
             emit(docker.prune(days))
         elif a.action == 'rm':
