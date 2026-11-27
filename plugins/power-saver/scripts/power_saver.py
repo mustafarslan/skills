@@ -297,19 +297,28 @@ def start_guard(ctx):
     return code == 0, out.strip()
 
 
-def wait_for_guard(ctx, offset, timeout=15.0):
+def wait_for_guard(ctx, offset, mode, timeout=20.0):
+    """The first guard entry after `offset` that ran in `mode`. A run already in flight when the task was started
+    (the task ignores a second start while one runs) may still show the old mode: then the task is started once
+    more."""
     deadline = time.monotonic() + timeout
+    restarted = False
     while True:
         size = log_size(ctx)
         entries = read_log(ctx, offset if size >= offset else 0)
-        if entries:
-            return entries[-1]
+        match = [e for e in entries if e.get('mode') == mode]
+        if match:
+            return match[-1]
+        if entries and not restarted:
+            restarted = True
+            offset = size
+            start_guard(ctx)
         if time.monotonic() >= deadline:
             return None
         ctx.sleep(0.5)
 
 
-def gpu_levers(ctx, cfg, offset):
+def gpu_levers(ctx, cfg, offset, mode):
     det = cfg.get('detected') or {}
     out = [lever('gpu', 'skipped', g['why']) for g in det.get('gpus', []) if g.get('vendor') != 'nvidia']
     smi = cfg.get('nvidia_smi')
@@ -324,7 +333,7 @@ def gpu_levers(ctx, cfg, offset):
         out.append(lever('gpu', 'pending', f'could not start the task now ({why or "access denied"}): '
                                            f'the guard applies the GPU limit within {unit}'))
         return out
-    entry = wait_for_guard(ctx, offset)
+    entry = wait_for_guard(ctx, offset, mode)
     if not entry:
         out.append(lever('gpu', 'pending', 'the task started but the guard has not logged yet; '
                                            'check `/power-saver status` in a minute'))
@@ -425,7 +434,7 @@ def cmd_on(ctx, keep_screen=False):
         levers.append(lever('power_mode', 'applied' if done else 'failed',
                             '"Best power efficiency"' if done else 'Windows refused the power mode change'))
     levers.append(energy_lever(ctx, pc, saver, cfg))
-    levers += gpu_levers(ctx, cfg, offset)
+    levers += gpu_levers(ctx, cfg, offset, 'on')
     if keep_screen:
         levers.append(lever('screen', 'skipped', '--keep-screen'))
     else:
@@ -443,16 +452,22 @@ def cmd_off(ctx):
     plist = list_plans(ctx, pc)
     have = {p['guid'] for p in plist}
     st = ctx.state()
+    active = get_active(ctx, pc)
     target, notes = st.get('back_plan'), []
     if not target or target == saver or target not in have:
         if target and target != saver and target not in have:
             notes.append(f"the plan from before ({st.get('back_plan_name') or target}) was deleted: back to Balanced")
-        target = wp.BALANCED if wp.BALANCED in have else cfg.get('fallback_plan') or wp.BALANCED
+            target = wp.BALANCED if wp.BALANCED in have else cfg.get('fallback_plan') or wp.BALANCED
+        elif active and active != saver:
+            target = active            # nothing saved (off twice, or off before on): the plan in use stays
+        else:
+            target = cfg.get('fallback_plan') if cfg.get('fallback_plan') in have else wp.BALANCED
     ok, why = ctx.write_mode('off')
     if not ok:
         return {'mode': 'unchanged', 'levers': [lever('mode', 'failed', why)]}
     offset = log_size(ctx)
-    ctx.run([pc, '/setactive', target])
+    if target != active:
+        ctx.run([pc, '/setactive', target])
     now = get_active(ctx, pc)
     levers = [lever('cpu', 'applied', f'back to {plan_name(plist, target)}: boost as that plan sets it')
               if now == target else lever('cpu', 'failed', f'Windows kept {plan_name(plist, now)} active')]
@@ -460,7 +475,7 @@ def cmd_off(ctx):
         done = ctx.win.set_overlay(st['back_overlay'])
         levers.append(lever('power_mode', 'applied' if done else 'failed',
                             'power mode put back' if done else 'Windows refused the power mode change'))
-    levers += gpu_levers(ctx, cfg, offset)
+    levers += gpu_levers(ctx, cfg, offset, 'off')
     done = ctx.win.wake_screens()
     levers.append(lever('screen', 'applied' if done else 'failed', 'screens on'))
     for k in ('back_plan', 'back_plan_name', 'back_overlay'):

@@ -114,7 +114,7 @@ class FakeMachine:
 
     def run(self, argv, timeout=None):
         self.calls.append(list(argv))
-        tool = Path(argv[0]).name.lower()
+        tool = re.split(r'[\\/]', argv[0])[-1].lower()      # Windows paths, also when the tests run on a Mac
         a = argv[1:]
         if tool == 'powercfg.exe':
             return self.powercfg(a)
@@ -541,6 +541,36 @@ class TestOnOff(Base):
         self.assertEqual(self.m.active, HIGH)
         self.assertEqual(self.results(out, 'cpu')[0]['result'], 'applied')
 
+    def test_off_twice_or_before_on_leaves_the_plan_in_use(self):
+        ctx = self.install()
+        self.m.active = HIGH
+        ps.cmd_off(ctx)
+        self.assertEqual(self.m.active, HIGH)
+        ps.cmd_on(ctx)
+        ps.cmd_off(ctx)
+        ps.cmd_off(ctx)
+        self.assertEqual(self.m.active, HIGH)
+        self.assertNotIn(['/setactive', wp.BALANCED], [c[1:] for c in self.m.calls])
+
+    def test_a_guard_run_already_in_flight_in_the_old_mode_is_not_taken_as_the_result(self):
+        ctx = self.install()
+        real = self.m.guard
+        state = {'n': 0}
+
+        def in_flight():
+            state['n'] += 1
+            if state['n'] == 1:            # the periodic run that started before the switch, still in 'off'
+                with open(self.root / 'guard.log', 'a') as f:
+                    f.write(json.dumps({'t': '2026-11-27T12:00:00Z', 'mode': 'off', 'gpus': [
+                        dict(self.m.gpus[0], i=0, want=575, result='ok')]}) + chr(10))
+                return
+            real()
+        self.m.guard = in_flight
+        out = ps.cmd_on(ctx)
+        self.assertEqual(self.results(out, 'gpu')[-1]['result'], 'applied')
+        self.assertIn('402 W', self.results(out, 'gpu')[-1]['why'])
+        self.assertEqual(state['n'], 2)
+
     def test_off_goes_back_to_a_vendor_plan(self):
         ctx = self.install()
         self.m.schemes[VENDOR_PLAN] = {'name': 'Vendor Turbo', 'subs': {}}
@@ -898,6 +928,27 @@ class TestSetupScriptDryRun(unittest.TestCase):
                      wp.VIDEOIDLE + ' = 120', 'admin-only', 'register the task power-saver',
                      'let Users run the task', 'write config.json'):
             self.assertIn(want, steps)
+
+    def test_a_folder_made_by_someone_else_loses_their_rights(self):
+        d = Path(tempfile.mkdtemp(prefix='ps-acl-'))
+        root = d / 'root'
+        root.mkdir()
+        (root / 'guard.ps1').write_text('planted')
+        subprocess.run(['icacls', str(root), '/grant', '*S-1-1-0:(OI)(CI)F'], capture_output=True)   # Everyone
+        try:
+            res = d / 'r.json'
+            p = subprocess.run(['powershell', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File',
+                                str(PLUGIN / 'scripts' / 'setup.ps1'), '-Action', 'SecureFolder', '-Root', str(root),
+                                '-ResultFile', str(res)], capture_output=True, text=True, timeout=120)
+            self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+            sddl = json.loads(res.read_text(encoding='utf-8-sig'))['sddl']
+            self.assertIn('D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)', sddl)
+            self.assertNotIn(';WD)', sddl)
+            self.assertEqual(sddl.split('D:')[1].count('(A;'), 3)
+        finally:
+            user = os.environ.get('USERNAME', '')
+            subprocess.run(['icacls', str(root), '/grant', f'{user}:(OI)(CI)F', '/T', '/C'], capture_output=True)
+            shutil.rmtree(d, ignore_errors=True)
 
     def test_uninstall_steps(self):
         r = self.run_setup('-Action', 'Uninstall')

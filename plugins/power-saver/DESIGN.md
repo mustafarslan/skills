@@ -122,10 +122,13 @@ So nobody adds them later without new evidence:
 
 The guard is a SYSTEM task that reads one file Users can write. That is the risk, and it is handled like this:
 
-- **Admin-only folder.** Setup refuses a folder that is a link or junction, makes Administrators the owner,
-  removes inherited rights, grants SYSTEM and Administrators full control and Users read, resets the rights of
-  everything inside, removes links inside, and deletes and rewrites `guard.ps1`, `config.json` and `mode` rather
-  than writing through whatever was there. Only `mode` gets Users "modify". Users cannot create files in the folder.
+- **Admin-only folder.** Setup refuses a folder that is a link or junction, makes Administrators the owner, and
+  replaces the folder's whole DACL with a protected one (`D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)`:
+  SYSTEM and Administrators full control, Users read), so an entry left by whoever created the folder first is
+  gone. It resets everything inside to inherit only that, removes links inside, and deletes and rewrites
+  `guard.ps1`, `config.json` and `mode` rather than writing through whatever was there. An earlier `config.json` is
+  read only when Administrators or SYSTEM own the folder and the file. Only `mode` gets Users "modify". Users
+  cannot create files in the folder.
 - **One word from `mode`.** The guard reads at most 16 bytes and accepts `on` or `off`; anything else counts as off
   and is logged without echoing the content. No number, path or command is ever read from it.
 - **Values in the admin-only config.** The share and margins change only through `/power-saver:setup` (one UAC
@@ -134,18 +137,21 @@ The guard is a SYSTEM task that reads one file Users can write. That is the risk
   `Program Files\NVIDIA Corporation\NVSMI`, folders only administrators can write; the guard calls both by those
   absolute paths. A copy of `nvidia-smi` elsewhere on PATH is never used.
 - **Task rights.** Setup adds one ACE, `(A;;GRGX;;;BU)` (Users: read and execute), to the task's security
-  descriptor through the Task Scheduler COM API (`GetSecurityDescriptor` / `SetSecurityDescriptor`), and reads it
-  back. Users may then start the task (`schtasks /run`), never change it. By default a standard account can't even
-  query a SYSTEM task ("Access is denied"). If Windows won't take the ACE, setup registers the task to repeat
-  every minute instead, and `on` says "the guard applies the GPU limit within a minute". After setup returns,
-  `power-saver setup` tries `schtasks /run` from the unelevated account and suggests `--every-minute` if it is
-  refused.
+  descriptor through the Task Scheduler COM API (`GetSecurityDescriptor` / `SetSecurityDescriptor`), and records
+  the descriptor it reads back. Users may then start the task (`schtasks /run`), never change it. By default a
+  standard account can't even query a SYSTEM task ("Access is denied"). If Windows refuses the ACE
+  (`SetSecurityDescriptor` throws), setup registers the task to repeat every minute instead, and `on` says "the
+  guard applies the GPU limit within a minute". After setup returns, `power-saver setup` tries `schtasks /run`
+  from the unelevated account; that decides, and if it is refused it suggests `--every-minute`.
 
 ## 5. State and edge cases
 
 - `on` twice: the plan to go back to is recorded only when the active plan isn't the saver plan.
 - A reboot while on: the startup trigger re-applies the GPU limits and the saver plan.
 - The plan to go back to was deleted: `off` falls back to Balanced and says so.
+- `off` twice, or `off` before any `on`: nothing is saved, so the plan in use stays (unless it is the saver plan).
+- A guard run already in flight when `on`/`off` start the task (the task ignores a second start) may log the old
+  mode; that entry is not taken as the result, and the task is started once more.
 - A bad `mode` file: counts as off; `status` flags it.
 - `status` flags drift: the saver plan with the mode off, the mode on without the saver plan, and a guard that
   hasn't logged for 15 minutes (or three intervals).

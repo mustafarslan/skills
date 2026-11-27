@@ -8,7 +8,7 @@
 #
 # -DryRun lists the steps and changes nothing (it does not need admin).
 param(
-    [ValidateSet('Install', 'Uninstall')][string]$Action = 'Install',
+    [ValidateSet('Install', 'Uninstall', 'SecureFolder')][string]$Action = 'Install',
     [string]$Source = $PSScriptRoot,
     [string]$DetectFile = '',
     [string]$ResultFile = '',
@@ -58,6 +58,16 @@ function Save-Result {
     else { ConvertTo-Json $result -Depth 6 }
 }
 
+# Windows PowerShell 5.1 turns a native tool's stderr into a terminating error under 'Stop' once it is redirected,
+# so tools run through this, with stderr dropped and the exit code left in $LASTEXITCODE.
+function Invoke-Tool {
+    $ErrorActionPreference = 'Continue'
+    $exe = $args[0]
+    $rest = @()
+    if ($args.Count -gt 1) { $rest = $args[1..($args.Count - 1)] }
+    & $exe @rest 2>$null
+}
+
 function Get-ActivePlan {
     $m = [regex]::Match(((& $pc /getactivescheme) -join ' '), $anyGuid)
     if ($m.Success) { return $m.Value.ToLowerInvariant() } else { return '' }
@@ -66,7 +76,7 @@ function Get-ActivePlan {
 function Get-PlanList { return [regex]::Matches(((& $pc /list) -join "`n"), $anyGuid) | ForEach-Object { $_.Value.ToLowerInvariant() } }
 
 function Test-Setting([string]$plan, [string]$sub, [string]$setting) {
-    $out = (& $pc /qh $plan $sub 2>$null) -join "`n"
+    $out = (Invoke-Tool $pc /qh $plan $sub) -join "`n"
     return ($LASTEXITCODE -eq 0 -and $out -match [regex]::Escape($setting))
 }
 
@@ -77,14 +87,46 @@ function Assert-NotLink([string]$path) {
     }
 }
 
+# The folder's whole DACL is replaced, not edited: protected (nothing inherited), SYSTEM and Administrators full
+# control, Users read and execute. Any other entry, such as one left by whoever created the folder first, is gone.
+# Everything inside is reset to inherit only that, and links inside are removed.
+$FolderSddl = 'D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)'
+function Set-AdminOnlyFolder([string]$path) {
+    Assert-NotLink $path
+    Invoke-Tool icacls $path /setowner '*S-1-5-32-544' /T /C /Q | Out-Null
+    # A fresh object with only the DACL section, so only the DACL is written (Set-Acl would also rewrite the owner).
+    $acl = New-Object System.Security.AccessControl.DirectorySecurity
+    $acl.SetSecurityDescriptorSddlForm($FolderSddl, [Security.AccessControl.AccessControlSections]::Access)
+    (Get-Item -LiteralPath $path -Force).SetAccessControl($acl)
+    Get-ChildItem -LiteralPath $path -Force | ForEach-Object {
+        if ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) { Remove-Item -LiteralPath $_.FullName -Force }
+    }
+    if (@(Get-ChildItem -LiteralPath $path -Force).Count -gt 0) { Invoke-Tool icacls (Join-Path $path '*') /reset /T /C /Q | Out-Null }
+}
+
+function Test-AdminOwned([string]$path) {
+    $sid = (Get-Acl -LiteralPath $path).GetOwner([Security.Principal.SecurityIdentifier]).Value
+    return ($sid -eq 'S-1-5-32-544' -or $sid -eq 'S-1-5-18')
+}
+
 try {
+    if ($Action -eq 'SecureFolder') {
+        # Only the folder rights, on -Root (used by the tests on a folder of their own; needs no admin there).
+        Set-AdminOnlyFolder $Root
+        $result.ok = $true
+        $result['sddl'] = (Get-Acl -LiteralPath $Root).Sddl
+        Save-Result
+        exit 0
+    }
     if (-not $DryRun) {
         $me = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
         if (-not $me.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'setup must run elevated' }
     }
     $old = $null
     $cfgPath = Join-Path $Root 'config.json'
-    if (Test-Path -LiteralPath $cfgPath -PathType Leaf) {
+    # An earlier config is trusted only inside a folder that administrators own (one setup made).
+    if ((Test-Path -LiteralPath $cfgPath -PathType Leaf) -and (Test-AdminOwned $Root) -and (Test-AdminOwned $cfgPath)) {
+        Assert-NotLink $Root
         Assert-NotLink $cfgPath
         try { $old = Get-Content -LiteralPath $cfgPath -Raw | ConvertFrom-Json } catch { $old = $null }
     }
@@ -93,7 +135,7 @@ try {
         Invoke-Step "unregister the task $TaskName" {
             Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue }
         if ($smi) {
-            $rows = & $smi '--query-gpu=uuid,power.limit,power.default_limit,power.min_limit,power.max_limit' '--format=csv,noheader,nounits' 2>$null
+            $rows = Invoke-Tool $smi '--query-gpu=uuid,power.limit,power.default_limit,power.min_limit,power.max_limit' '--format=csv,noheader,nounits'
             foreach ($line in @($rows)) {
                 $p = ([string]$line).Split(',')
                 if ($p.Count -ne 5) { continue }
@@ -193,13 +235,7 @@ try {
     Assert-NotLink $Root
     Invoke-Step "make $Root admin-only (Users: read; the mode file: modify)" {
         New-Item -ItemType Directory -Path $Root -Force | Out-Null
-        Assert-NotLink $Root
-        & icacls $Root /setowner '*S-1-5-32-544' /T /C /Q | Out-Null
-        & icacls $Root /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-32-545:(OI)(CI)RX' /Q | Out-Null
-        Get-ChildItem -LiteralPath $Root -Force | ForEach-Object {
-            if ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) { Remove-Item -LiteralPath $_.FullName -Force }
-        }
-        & icacls (Join-Path $Root '*') /reset /T /C /Q | Out-Null
+        Set-AdminOnlyFolder $Root
     }
     $modePath = Join-Path $Root 'mode'
     Invoke-Step 'write guard.ps1 and the mode file' {
@@ -213,7 +249,8 @@ try {
             Remove-Item -LiteralPath $modePath -Force
         }
         [IO.File]::WriteAllText($modePath, "$word`n")
-        & icacls $modePath /grant '*S-1-5-32-545:M' /Q | Out-Null
+        Invoke-Tool icacls $modePath /grant '*S-1-5-32-545:M' /Q | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw 'could not give Users modify rights on the mode file' }
     }
 
     # ---- the task: SYSTEM, at startup and every $interval minutes, one instance at a time ----
@@ -230,6 +267,7 @@ try {
     Invoke-Step "register the task $TaskName (SYSTEM, at startup and every $interval minutes)" { Register-Guard $interval }
 
     # Users may read and run the task, never change it: one ACE, (A;;GRGX;;;BU), added to the task's DACL.
+    # Whether a standard account can then really start it is checked afterwards, unelevated, by `power-saver setup`.
     $runRights = $false
     Invoke-Step 'let Users run the task (read + execute on its security descriptor)' {
         try {
@@ -238,8 +276,9 @@ try {
             $task = $svc.GetFolder('\').GetTask($TaskName)
             $sd = $task.GetSecurityDescriptor(4)
             if ($sd -notmatch '\(A;;GRGX;;;BU\)') { $task.SetSecurityDescriptor($sd + '(A;;GRGX;;;BU)', 0) }
-            $script:runRights = ($svc.GetFolder('\').GetTask($TaskName).GetSecurityDescriptor(4)) -match '\(A;;GRGX;;;BU\)'
-        } catch { $script:runRights = $false }
+            $script:runRights = $true
+            $script:result['task_sddl'] = $svc.GetFolder('\').GetTask($TaskName).GetSecurityDescriptor(4)
+        } catch { $script:runRights = $false; $script:result['task_sddl_error'] = $_.Exception.Message }
         if (-not $script:runRights -and $interval -ne 1) {
             # Fallback: Windows would not take the rights, so the guard repeats every minute instead.
             $script:interval = 1
