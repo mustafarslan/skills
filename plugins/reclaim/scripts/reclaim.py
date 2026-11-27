@@ -11,6 +11,8 @@
   docker disk                         Docker's disk image on the host: its size against what Docker holds
   docker compact [--release] [--shutdown-wsl] [--dry-run]
                                       Windows: shrink Docker's VHDX (Docker quit; one UAC prompt)
+  buildirs scan                       build folders (node_modules, target, ...) in kept, idle worktrees
+  buildirs remove PATH...             remove those the last buildirs scan offered (re-checks each)
   caches scan [--days N]              developer caches (npm, pip, Gradle, ...): size and how each clears
   caches clear ID... [--days N]       clear those caches (skipped while their tool runs)
   config show | set KEY VALUE | detect | detect-roots | preview
@@ -24,6 +26,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import backup as backup_mod  # noqa: E402
+import buildirs  # noqa: E402
 import caches  # noqa: E402
 import docker  # noqa: E402
 import plat  # noqa: E402
@@ -124,6 +127,9 @@ def main(argv=None):
     d.add_argument('--dry-run', action='store_true', help='compact: check everything, change nothing')
     d.add_argument('--prune-images', action='store_true',
                    help='with rm: also prune old unused images afterwards (only after the user approved it)')
+    bd = sub.add_parser('buildirs')
+    bd.add_argument('action', choices=['scan', 'remove'])
+    bd.add_argument('paths', nargs='*')
     k = sub.add_parser('caches')
     k.add_argument('action', choices=['scan', 'clear'])
     k.add_argument('ids', nargs='*')
@@ -167,6 +173,14 @@ def main(argv=None):
                 emit({'error': 'name the containers to remove'})
                 return 2
             emit(docker.remove_containers(a.names, days, keep, prune_after=a.prune_images))
+    elif a.cmd == 'buildirs':
+        if a.action == 'scan':
+            emit(buildirs.scan(cfg, days))
+        else:
+            if not a.paths:
+                emit({'error': 'name the build folders to remove (their paths from buildirs scan)'})
+                return 2
+            emit(buildirs.remove(cfg, a.paths))
     elif a.cmd == 'caches':
         cdays = a.days  # caches have their own age (cache_days); --days here overrides that
         if a.action == 'scan':

@@ -536,7 +536,7 @@ def scan(repos, days, merged=True, current=None, with_size=True, warnings=None):
     with ThreadPoolExecutor(max_workers=6) as pool:
         rows = list(pool.map(one, trees))
     result = {'at': now(), 'days': days, 'cutoff': cutoff, 'park_checked': parked is not None,
-              'prs_checked': gh_ok is not None, 'warnings': warnings, 'rows': rows}
+              'prs_checked': gh_ok is not None, 'warnings': warnings, 'rows': rows, 'repos': list(repos)}
     write_atomic(home() / SCAN_FILE, json.dumps(result, indent=2))
     return result
 

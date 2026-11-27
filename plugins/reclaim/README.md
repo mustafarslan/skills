@@ -62,6 +62,14 @@ kept when:
 
 Removing a worktree deletes the folder only. The branch and its commits stay in git.
 
+**Build folders in kept worktrees.** A worktree kept for an open PR or unpushed commits can still hold
+gigabytes of `node_modules`, `target`, `.venv`, `build`, `dist`, `.gradle`, `Intermediate`, `Binaries` or a
+build cache such as `DerivedDataCache` (add your own names with `build_dir_names`). reclaim offers them, per
+tree and with their size, only when the tree has been idle for your number of days and is not kept because a
+process, this session or a paused session uses it; main checkouts only with `buildirs_in_main: true`. A
+folder qualifies only if git tracks nothing in it and `git check-ignore` agrees it is ignored, and it is
+checked again right before it is deleted.
+
 Before removing a worktree with uncommitted work, reclaim writes `<backup folder>/<name>-<date>/`:
 
 - `tracked.patch`: the changes against HEAD;

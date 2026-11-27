@@ -1,6 +1,6 @@
 ---
 name: reclaim
-description: Free disk space on this computer (macOS or Windows) - remove old git worktrees and ones whose PR merged (backing up uncommitted work first), bring back a Docker Desktop that hung after the disk filled, prune old Docker images, build cache and stale containers, show (on Windows, shrink) Docker's disk file, and clear developer caches (npm, pnpm, yarn, pip, uv, NuGet, Cargo, Gradle, Maven, Go, Xcode). Use when the user says "/reclaim", "free up space", "disk is full", "clean old worktrees", "delete old docker images", "Docker won't start, no space left on device", or when the reclaim low-disk warning appears. Flags --days N, --dry-run, --no-merged, --worktrees-only, --docker-only.
+description: Free disk space on this computer (macOS or Windows) - remove old git worktrees and ones whose PR merged (backing up uncommitted work first), clear build folders (node_modules, target, ...) in worktrees that are kept but idle, bring back a Docker Desktop that hung after the disk filled, prune old Docker images, build cache and stale containers, show (on Windows, shrink) Docker's disk file, and clear developer caches (npm, pnpm, yarn, pip, uv, NuGet, Cargo, Gradle, Maven, Go, Xcode). Use when the user says "/reclaim", "free up space", "disk is full", "clean old worktrees", "delete old docker images", "Docker won't start, no space left on device", or when the reclaim low-disk warning appears. Flags --days N, --dry-run, --no-merged, --worktrees-only, --docker-only.
 allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/reclaim *), AskUserQuestion
 ---
 
@@ -41,6 +41,12 @@ shows every table, and asks nothing and removes nothing.
 4. Run `R remove PATH...` with the chosen rows' paths. Report each `removed` / `skipped` / `failed`
    with its `why`. A skipped row changed since the scan, so leave it. If the scan is over an hour old,
    `remove` refuses: run the scan again and show the table again.
+5. **Build folders in kept worktrees.** Run `R buildirs scan` (it reads the scan from step 1). It lists
+   `folders` such as `node_modules` or `target` inside worktrees that are kept but idle, each with its
+   `tree`, `folder` and `size` (what a rebuild would download or compile again). If there are none, say
+   nothing. Otherwise show one table grouped by tree, then one AskUserQuestion, multiSelect, one option per
+   tree: "`<tree name>`: `<folders>` (X GB)". Run `R buildirs remove PATH...` with the chosen folders'
+   `path`s and report each result. The worktrees themselves, their commits and their other files stay.
 
 ## 2. Docker
 

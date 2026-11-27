@@ -210,6 +210,21 @@ Build folders (`BUILD_DIRS`) are never backed up and never count as activity: `n
 `venv`, `.next`, `.turbo`, `__pycache__`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `dist`, `build`,
 `coverage`, `target` and `.cache`. Checkouts just inside them are still detected, to depth 3.
 
+## 8b. Build folders in kept worktrees (0.4.0, `scripts/buildirs.py`)
+
+`buildirs scan` reads the last worktree scan (an hour at most) and looks inside each tree whose verdict is
+`keep` and that is idle: `old` is true, no uncommitted file was edited since the cutoff, and no keep reason
+says it is used (in use, this session, a paused session, the process check failed, edited, newer than the
+cutoff). Main checkouts count only with `buildirs_in_main: true`. In those trees, up to four levels down and
+never inside another checkout, a link or junction, it offers folders named `node_modules`, `target`, `.venv`,
+`build`, `dist`, `.gradle`, `Intermediate`, `Binaries`, `DerivedDataCache` or a `build_dir_names` entry, when
+`git ls-files -- <dir>` is empty, `git check-ignore -q -- <dir>/` succeeds, no checkout sits inside, and no
+process is in it. It writes `last-buildirs.json`.
+
+`buildirs remove PATH...` takes only folders that scan offered, within the hour. For each it inspects the tree
+again (idle, not in use), runs every folder check again, checks for files other programs hold open (Windows),
+and deletes through the shared delete routine.
+
 ## 9. Docker
 
 - **Down and hung** needs all three facts:

@@ -30,6 +30,8 @@ DEFAULTS = {
     'hook': True,
     'cache_days': 30,
     'cache_dirs': [],
+    'buildirs_in_main': False,
+    'build_dir_names': [],
 }
 
 
@@ -102,6 +104,9 @@ VALIDATORS = {
     'hook': lambda v: isinstance(v, bool),
     'cache_days': lambda v: _is_num(v) and v >= 0,
     'cache_dirs': lambda v: isinstance(v, list) and all(isinstance(x, str) for x in v),
+    'buildirs_in_main': lambda v: isinstance(v, bool),
+    'build_dir_names': lambda v: isinstance(v, list) and all(
+        isinstance(x, str) and x not in ('', '.', '..') and not set(x) & set('/\\') for x in v),
 }
 
 
