@@ -363,6 +363,16 @@ Otherwise it prints hook JSON: `systemMessage`, which the user sees, and
 One jq pitfall: `.hook // true` returns `true` for `false`, because `//` treats `false` as missing. Use
 `if .hook == false then "off" else "on" end`.
 
+### Per drive (0.4.0)
+
+`df` keeps `free_gb` (for `/`, or the home drive on Windows) and adds `drives`: one row per drive or volume
+that holds the system, a repo, a repo folder, the backup folder or Docker's disk image, with its free and
+total space and what it holds. A path is placed by its nearest existing folder (a backup folder not made yet
+counts where it will be), and a drive that isn't there is left out. Windows groups by volume
+(`GetVolumePathNameW`); macOS by the space a volume reports, so `/` and the Data volume of one APFS container
+are one row and an external SSD is another. The hook warns for each row below `warn_gb`, naming the drive and
+what it holds. It only reads the config and checks files: no git, no Docker command.
+
 ## 12. The skills
 
 **`/reclaim`** (flags `--days N`, `--dry-run`, `--no-merged`, `--worktrees-only`, `--docker-only`):

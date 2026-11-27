@@ -1,6 +1,7 @@
 """reclaim CLI. Prints JSON. Read-only unless the subcommand name says it removes something.
 
-  df                                  free space on /
+  df                                  free space on / (Windows: the home drive), and on every drive that
+                                      holds a repo, a repo folder, the backups or Docker's disk
   scan [--days N] [--no-merged]       worktrees with a verdict each (writes last-scan.json)
   remove PATH...                      remove worktrees the last scan approved (re-checks each)
   backup PATH                         back up one worktree's uncommitted work
@@ -32,7 +33,7 @@ import docker  # noqa: E402
 import plat  # noqa: E402
 import vdisk  # noqa: E402
 import worktrees  # noqa: E402
-from common import VALIDATORS, emit, free_bytes, gb, git, load_config, save_config  # noqa: E402
+from common import VALIDATORS, drives, emit, free_bytes, gb, git, load_config, save_config, watched_paths  # noqa: E402
 
 
 def detect_repos(limit=300):
@@ -97,9 +98,7 @@ def resolve_repos(repos, roots):
 
 def system_root():
     """'/' on macOS and Linux, as before; on Windows the drive that holds the home folder."""
-    if not plat.WINDOWS:
-        return '/'
-    return os.path.splitdrive(str(Path.home()))[0] + os.sep
+    return plat.system_root()
 
 
 def main(argv=None):
@@ -144,7 +143,8 @@ def main(argv=None):
     days = cfg['days'] if given is None else given  # --days 0 is a real value
 
     if a.cmd == 'df':
-        emit({'free_gb': gb(free_bytes(system_root()))})
+        emit({'free_gb': gb(free_bytes(system_root())),
+              'drives': drives(watched_paths(cfg, [p for p, _ in vdisk.disk_paths()]))})
     elif a.cmd == 'scan':
         repos, warns = resolve_repos(a.repo or cfg['repos'], [] if a.repo else cfg['roots'])
         if not repos:

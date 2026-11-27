@@ -41,7 +41,10 @@ careful or skips that part. It never makes it bolder, and it says so in the scan
 | `/reclaim:init` | Changes your repos, backup folder, age, protected containers and warning level |
 
 At the start of a session, reclaim shows one line when free space is below your warning level (15 GB by
-default), at most once an hour. It says nothing otherwise.
+default), at most once an hour. It says nothing otherwise. It watches every drive that matters, not only the
+system's: each drive that holds one of your repos or repo folders, the backup folder or Docker's disk image
+(for example an external SSD on a Mac, or `D:` on a PC), and names the one that is filling. `df` lists them
+all.
 
 ## What it removes, and what it never removes
 

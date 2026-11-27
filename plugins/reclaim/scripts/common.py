@@ -150,6 +150,39 @@ def gb(n):
     return round(n / 1e9, 1)
 
 
+def watched_paths(cfg, docker_disks=()):
+    """[(what, path)]: everything reclaim fills or frees, whose drive's free space matters."""
+    out = [('repos', r) for r in cfg.get('repos', [])] + [('repo folders', r) for r in cfg.get('roots', [])]
+    out.append(('backups', cfg.get('backup_dir') or default_backup_dir()))
+    out += [("Docker's disk", d) for d in docker_disks]
+    return out
+
+
+def drives(watched):
+    """Free space on each drive or volume that holds one of `watched` ([(what, path)]), the system's first.
+
+    [{'volume', 'free_gb', 'total_gb', 'holds': [what, ...]}]. A path on a drive that isn't there (unplugged)
+    is left out. On macOS, APFS volumes that share a container (/ and /System/Volumes/Data) report the same
+    space, so they count as one.
+    """
+    groups, order = {}, []
+    for what, path in [('system', plat.system_root())] + list(watched):
+        vol = plat.volume_of(path)
+        if not vol:
+            continue
+        try:
+            du = plat.disk_usage(vol)
+        except OSError:
+            continue
+        key = os.path.normcase(vol) if plat.WINDOWS else (du.total, du.free)
+        if key not in groups:
+            groups[key] = {'volume': vol, 'free_gb': gb(du.free), 'total_gb': gb(du.total), 'holds': []}
+            order.append(key)
+        if what not in groups[key]['holds']:
+            groups[key]['holds'].append(what)
+    return [groups[k] for k in order]
+
+
 def du_bytes(path):
     """Size on disk (du on macOS and Linux; a walk that never follows a junction on Windows)."""
     return plat.dir_size(path)

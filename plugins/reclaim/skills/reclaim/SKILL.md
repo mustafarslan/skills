@@ -16,7 +16,8 @@ Running `git worktree remove`, `rm -rf`, `docker rm` or `docker volume` yourself
 
 1. Run `R config show`. If `configured` is false, say "reclaim isn't set up yet" and run `/reclaim:init`
    first, then come back here.
-2. Run `R df` and remember `free_gb` as **before**.
+2. Run `R df` and remember each of its `drives` (volume, `free_gb`, `holds`) as **before**. When there is
+   more than one, say in one line which drive is filling and what it holds (repos, backups, Docker's disk).
 
 Flags: `--days N` overrides the configured age. `--no-merged` removes by age only.
 `--worktrees-only` and `--docker-only` run only that section. `--dry-run` runs every read step,
@@ -105,7 +106,7 @@ sizes and let them run `docker volume rm` themselves, after they confirm which o
 
 Run `R df`. One short summary:
 
-- free space **before → after**;
+- free space **before → after**, for each drive in `drives`;
 - what was removed (worktrees, image space, build cache, containers, developer caches);
 - the backup folder, if any backups were made. Each backup's `INFO.txt` holds its restore steps.
 

@@ -199,6 +199,42 @@ def free_bytes(path='/'):
     return shutil.disk_usage(path).free
 
 
+def disk_usage(path):
+    return shutil.disk_usage(path)
+
+
+def system_root():
+    """'/' on macOS and Linux; on Windows the drive that holds the home folder."""
+    if not WINDOWS:
+        return '/'
+    return os.path.splitdrive(os.path.expanduser('~'))[0] + '\\'
+
+
+def volume_of(path):
+    """The volume (mount point, or drive) a path lives on, from its nearest existing folder. None when even
+    that can't be found (an unplugged drive)."""
+    p = os.path.abspath(os.path.expanduser(str(path)))
+    while not os.path.exists(p):
+        parent = os.path.dirname(p)
+        if parent == p:
+            return None
+        p = parent
+    if WINDOWS:
+        try:
+            import ctypes
+            buf = ctypes.create_unicode_buffer(1024)
+            if ctypes.WinDLL('kernel32').GetVolumePathNameW(ctypes.c_wchar_p(p), buf, 1024):
+                return buf.value
+        except (OSError, AttributeError):
+            pass
+        drive = os.path.splitdrive(p)[0]
+        return drive + '\\' if drive else None
+    p = os.path.realpath(p)
+    while not os.path.ismount(p):
+        p = os.path.dirname(p)
+    return p
+
+
 def dir_size(path):
     """Bytes a folder holds. POSIX: `du -sk` (fast, the real block count), as before. Windows: a walk that
     never follows a link or junction (what they point to is counted where it lives)."""
