@@ -102,6 +102,9 @@ class TestWorktreeSafety(Base):
         self.assertTrue(any('PRs were not checked' in w for w in rows['warnings']))
         row = {r['path']: r for r in rows['rows']}[p]
         self.assertEqual(row['verdict'], 'remove')
+        # The removal follows the scan's footing: no PR lookup it couldn't make at scan time either.
+        out = worktrees.remove([p], str(self.backups), backup_mod.backup)
+        self.assertEqual(out['results'][0]['result'], 'removed', out)
 
     def test_proc_reader_lists_cwds(self):
         if not can_symlink(self.tmp):

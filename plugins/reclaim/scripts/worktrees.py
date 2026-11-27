@@ -575,7 +575,10 @@ def _remove_one(path, before, last, cwds, parked, backup_dir, backup_fn):
         if not forget_worktree(before['repo'], path):
             return {'path': path, 'result': 'skipped', 'why': 'could not find or clear its git record (locked?)'}
         return {'path': path, 'result': 'pruned'}
-    now_row = inspect(path, before['main'], last['cutoff'], cwds, parked,
+    # PRs are looked up again only if the scan could look them up: a scan without gh decided on age and
+    # unpushed commits, and a lookup that can't run must not then refuse every tree it approved.
+    with_prs = last.get('prs_checked', True)
+    now_row = inspect(path, before['main'], last['cutoff'], cwds, parked, with_prs=with_prs,
                       current=os.path.realpath(os.getcwd()))
     if now_row['verdict'] == 'keep':
         return {'path': path, 'result': 'skipped', 'why': '; '.join(now_row['reasons'])}
@@ -588,7 +591,7 @@ def _remove_one(path, before, last, cwds, parked, backup_dir, backup_fn):
         if not backup.get('ok'):
             return {'path': path, 'result': 'skipped', 'why': 'backup failed: ' + backup.get('error', '')}
         # The backup can take minutes: anything that moved meanwhile isn't in it, so check again.
-        after = inspect(path, before['main'], last['cutoff'], process_cwds(), parked,
+        after = inspect(path, before['main'], last['cutoff'], process_cwds(), parked, with_prs=with_prs,
                         current=os.path.realpath(os.getcwd()))
         if after['verdict'] == 'keep' or after['fingerprint'] != now_row['fingerprint']:
             return {'path': path, 'result': 'skipped', 'why': 'changed during the backup (backup kept)',
