@@ -48,8 +48,8 @@ def main():
         write_atomic(stamp, str(int(time.time())) + '\n')
     except OSError:
         pass
-    where = ', '.join(f"{d['free_gb']:g} GB on {d['volume']} ({', '.join(d['holds'])})" for d in low)
-    msg = (f'reclaim: only {where} free (your warning level is {warn:g} GB). '
+    where = '; '.join(f"only {d['free_gb']:g} GB free on {d['volume']} ({', '.join(d['holds'])})" for d in low)
+    msg = (f'reclaim: {where} (your warning level is {warn:g} GB). '
            'Run /reclaim to clear old worktrees, build folders, caches and Docker data.')
     print(json.dumps({'systemMessage': msg,
                       'hookSpecificOutput': {'hookEventName': 'SessionStart', 'additionalContext': msg}}))

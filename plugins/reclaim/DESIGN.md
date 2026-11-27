@@ -62,8 +62,11 @@ reclaim/                                  # a local marketplace you can add dire
     ├── scripts/worktrees.py              # facts, verdicts, scan, remove
     ├── scripts/backup.py                 # patch + archives, verified
     ├── scripts/docker.py                 # status, hung detection, restart, prune, rm
+    ├── scripts/buildirs.py               # build folders in kept, idle worktrees
+    ├── scripts/caches.py                 # developer caches
+    ├── scripts/vdisk.py, compact.ps1     # Docker's disk file; the one admin step (Windows)
     ├── scripts/low-disk.sh               # the hook
-    └── tests/run.test.sh, test_reclaim.py
+    └── tests/run.test.sh, test_*.py
 ```
 
 It needs only the standard library: Python 3.9 or newer, `git` and `gh` (logged in). On macOS it also uses
@@ -76,7 +79,7 @@ All output is JSON. A subcommand changes nothing unless its name says it removes
 
 | Command | Does |
 |---|---|
-| `reclaim df` | Free GB on `/` |
+| `reclaim df` | Free GB on `/` (Windows: the home drive), plus `drives`: every drive that matters |
 | `reclaim scan [--days N] [--no-merged] [--repo PATH]...` | One row per worktree of each configured repo, with a verdict. Writes `last-scan.json` |
 | `reclaim remove PATH...` | Removes worktrees the last scan approved, re-checking each one |
 | `reclaim backup PATH` | Backs up one worktree's uncommitted work |
@@ -84,6 +87,10 @@ All output is JSON. A subcommand changes nothing unless its name says it removes
 | `reclaim docker restart-hung` | Only when hung: kills the stuck processes, `open -a Docker`, waits up to 3 min |
 | `reclaim docker prune [--days N]` | `image prune -a` and `builder prune -a`, both with `--filter until=<N*24>h` |
 | `reclaim docker rm NAME...` | Removes named containers that are still stale now (no `-v`), then prunes images |
+| `reclaim docker disk` | Docker's disk image: size and real size against what Docker holds |
+| `reclaim docker compact [--release] [--shutdown-wsl] [--dry-run]` | Windows: shrinks Docker's VHDX (9c) |
+| `reclaim buildirs scan` / `remove PATH...` | Build folders in kept, idle worktrees (8b) |
+| `reclaim caches scan` / `clear ID...` `[--days N]` | Developer caches (9d) |
 | `reclaim config show \| set KEY VALUE \| detect` | Read, write, or find repos from recent Claude sessions |
 
 ## 5. Configuration
@@ -105,6 +112,14 @@ still honoured by the hook. `tests/test_safety.py` pins this with the variable s
 | `keep_containers` | `[]` | Container names or globs never offered for removal (`k3d-*`) |
 | `warn_gb` | `15` | The hook warns below this |
 | `hook` | `true` | `false` silences the warning |
+| `roots` | `[]` | Folders of repos, scanned two levels deep (0.3.0) |
+| `cache_days` | `30` | A by-age cache entry untouched this long goes |
+| `cache_dirs` | `[]` | Your own cache folders, cleared by age |
+| `buildirs_in_main` | `false` | Also offer build folders in main checkouts |
+| `build_dir_names` | `[]` | More build folder names (plain names, no `/`) |
+
+The backup default is `~/Desktop/worktree-backups` on macOS and `~/reclaim-backups` elsewhere
+(`%USERPROFILE%\reclaim-backups` on Windows). On Windows, write paths in `config set` with forward slashes.
 
 `config detect` reads the first `cwd` of up to 300 recent session transcripts in `~/.claude/projects/*/`.
 It maps each one to its repo's main checkout (the parent of `git rev-parse --git-common-dir`), then
@@ -293,7 +308,23 @@ documented ones. Until each step has run live once on a Windows PC, reclaim only
 `LIVE_ON_WINDOWS` in `docker.py` is False, `down.hung` stays False (`down.hung_suspected` carries the three
 facts), and the step refuses unless it is given `--first-live-run`. The skill never passes that flag. The
 owner runs each step once by hand, watching, and then sets its entry to True in a commit that records what
-the log said.
+the log said. The steps:
+
+1. **Revive.** Only when Docker Desktop really hangs after a full disk (do not fill a disk to make it).
+   Read `reclaim docker status`: `down.hung_suspected` should be true. Open the newest
+   `%LOCALAPPDATA%\Docker\log\host\com.docker.backend*.log` and check that its last lines say
+   `backend state changed to stopping` and `no space left on device`; if they use other words, change the
+   patterns in `_hung_state_windows` first. Then `reclaim docker restart-hung --first-live-run`, and watch
+   Docker Desktop come back. If it worked, set `LIVE_ON_WINDOWS['revive'] = True`.
+2. **Compact.** After Docker Desktop's first start, `reclaim docker disk` should list `docker_data.vhdx`
+   (or `ext4.vhdx`). Quit Docker Desktop, then `reclaim docker compact --first-live-run --dry-run`, then
+   without `--dry-run` (adding `--release` and, if asked, `--shutdown-wsl`), say yes to the one UAC prompt,
+   and check that `freed` is plausible and Docker Desktop starts and still has its images and volumes.
+   If it worked, set `LIVE_ON_WINDOWS['compact'] = True`.
+
+**The in-use probe's one side effect.** Each folder is held with no sharing for the microseconds between
+open and close. Listing it, reading it and creating files in it work meanwhile (tested); only a process that
+changes into that very folder at that instant is refused, as if the folder were busy.
 
 ## 9c. Docker's disk file (0.4.0, `scripts/vdisk.py`, `scripts/compact.ps1`)
 
@@ -396,7 +427,14 @@ what it holds. It only reads the config and checks files: no git, no Docker comm
 **`/reclaim:init`** asks for the repos (from `config detect`), the age, the backup folder, the containers to
 keep, and the warning level, then reads the config back.
 
-## 13. Tests (37, about 12 s)
+## 13. Tests (130 on Windows, about 3 minutes; the Windows-only ones skip on macOS)
+
+0.4.0 adds `test_platform.py` (the platform layer and the Windows port: the in-use probe with a real child
+process in a subfolder, a file held open during a removal, junctions inside a tree, a backup and a cache,
+paths past 260 characters, the `.cmd` quoting, `wsl -l -v` from captured fixtures, the revive gate),
+`test_vdisk.py`, `test_caches.py`, `test_buildirs.py` and `test_drives.py`. Fakes on Windows are a `.cmd`
+next to a `.py`; HOME, USERPROFILE, LOCALAPPDATA, APPDATA and ProgramFiles point into the test's folder, so no
+real Docker or cache is seen. The POSIX-only cases (`lsof`, `pgrep`) skip on Windows and have Windows twins.
 
 `tests/test_reclaim.py` builds throwaway git repos with a bare remote. `gh`, `lsof` and `docker` are fakes
 on `PATH`, driven by environment variables. Commit and reflog times are set through
@@ -456,6 +494,16 @@ To rebuild from scratch, work in this order, testing each step before the next:
 3. `remove` (§7): fingerprint, both re-checks, no force fallback, per-tree error isolation.
 4. `docker.py` (§9).
 5. The CLI, the skills, the hook and the README.
+
+## 14a. Changes in 0.4.0
+
+- **Windows** (9b): the whole plugin, through `plat.py`. macOS keeps its `du`, `tar` and `lsof` calls.
+- **Docker's disk file** (9c), **developer caches** (9d), **build folders in kept worktrees** (8b) and
+  **free space per drive** (11), on both systems where they make sense.
+- `remove` looks PRs up again only when the scan could (a scan without `gh` no longer leads to every removal
+  being skipped as "PR lookup failed").
+- `docker rm` is documented as it is: plain `rm`, `-f` only for a container stuck restarting.
+- Report-only on Windows until run live once: the Docker revive and the compact.
 
 ## 14b. Changes in 0.2.0
 

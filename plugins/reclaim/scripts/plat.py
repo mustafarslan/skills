@@ -483,7 +483,7 @@ def processes(details=True):
     Windows: the process table, each one's program path, and (details) the current folder and command line of
     this user's own processes. POSIX: `ps`, names and command lines only. [] when the table can't be read."""
     if not WINDOWS:
-        rc, out, _ = run(['ps', '-axo', 'pid=,ppid=,args='], timeout=30)
+        rc, out, _ = run(['ps', '-Ao', 'pid=,ppid=,args='], timeout=30)
         rows = []
         for line in out.splitlines() if rc == 0 else []:
             parts = line.split(None, 2)

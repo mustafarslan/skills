@@ -33,7 +33,7 @@ careful or skips that part. It never makes it bolder, and it says so in the scan
 
 | You type | What happens |
 |---|---|
-| `/reclaim` | Shows what it would remove and asks you, then removes worktrees, revives a hung Docker, and prunes old images, build cache and stale containers |
+| `/reclaim` | Shows what it would remove and asks you, then removes worktrees and the build folders of idle kept ones, revives a hung Docker, prunes old images, build cache and stale containers, shows Docker's disk file, and clears the developer caches you pick |
 | `/reclaim --dry-run` | Shows every table and removes nothing |
 | `/reclaim --days 7` | Treats a worktree as old after 7 days instead of your setting |
 | `/reclaim --no-merged` | Removes worktrees by age only, not because their PR merged |
