@@ -1,4 +1,5 @@
-"""park: put every Claude session on this Mac to rest, and bring them back later.
+"""park: put every Claude session on this computer (a Mac, or Windows with Windows Terminal) to rest, and bring
+them back later.
 
   park doctor                               can park run here? (claude, Terminal permission, store)
   park plan [--only X]… [--exclude X]… [--label L]
@@ -32,6 +33,10 @@ import db          # noqa: E402
 import inventory   # noqa: E402
 import snapshot    # noqa: E402
 import terminal    # noqa: E402
+
+WINDOWS = sys.platform == "win32"
+if WINDOWS:
+    import winterm  # noqa: E402
 
 PR_PULSE = Path.home() / ".claude" / "pr-pulse" / "app" / "scripts" / "pr-pulse"
 PR_PULSE_DB = Path.home() / ".claude" / "pr-pulse" / "pulse.db"
@@ -123,11 +128,19 @@ def note(con, park_id, sid, text):
 def pr_pulse_is_on():
     if not PR_PULSE.exists() or not PR_PULSE_DB.exists():
         return False
-    out = inventory.run(["sqlite3", str(PR_PULSE_DB), "SELECT value FROM settings WHERE key='stopped'"]) or ""
-    return out.strip() != "1"
+    try:      # Python's own sqlite3: Windows has no sqlite3 program
+        import sqlite3
+        con = sqlite3.connect(f"file:{PR_PULSE_DB.as_posix()}?mode=ro", uri=True, timeout=5)
+        row = con.execute("SELECT value FROM settings WHERE key='stopped'").fetchone()
+        con.close()
+    except Exception:
+        return True
+    return str(row[0] if row else "").strip() != "1"
 
 
 def alive(pid):
+    if WINDOWS:
+        return winterm.alive(pid)       # never os.kill(pid, 0) there: signal 0 is a Ctrl+C
     try:
         os.kill(int(pid), 0)
         return True
@@ -170,7 +183,13 @@ def wait_idle(sid, seconds):
 
 def send(pid, sig):
     """Signal a pid. A process that exited in the meantime (or one we may not signal) is not an error:
-    it must never abort the coordinator half-way, with pr-pulse off and sessions still up."""
+    it must never abort the coordinator half-way, with pr-pulse off and sessions still up.
+    Windows has no signals to send: SIGINT is a Ctrl+C on the session's console, SIGTERM is TerminateProcess."""
+    if WINDOWS:
+        try:
+            return winterm.interrupt(pid) if sig == signal.SIGINT else winterm.terminate(pid, 1)
+        except Exception:
+            return False
     try:
         os.kill(int(pid), sig)
         return True
@@ -182,7 +201,11 @@ def stop_interactive(row, busy_wait):
     """SIGINT (cancels a running turn; an idle session exits on it), wait for the transcript to settle,
     then SIGTERM if it is still there. Returns how it ended."""
     pid = row["pid"]
-    if not pid or not alive(pid) or not send(pid, signal.SIGINT):
+    if not pid or not alive(pid):
+        return "already gone"
+    if not send(pid, signal.SIGINT):
+        if WINDOWS and alive(pid):      # no console to send a Ctrl+C to: left as it is, never cut off
+            return "not stopped: could not send it a Ctrl+C (it has no console)"
         return "already gone"
     wait_quiet(snapshot.transcript(row["sid"]), busy_wait if row["status_at_park"] == "busy" else 3)
     if wait_gone(pid, 3):
@@ -264,9 +287,9 @@ def coordinate(con, park_id, self_pid=None, live=None):
     if mode == "all" and any(r["sid"] in failed for r in inter):
         mode = "claude"
         db.event(con, "park.terminal_kept", {"park": park_id, "not_stopped": failed})
-    if mode == "all":
+    if mode == "all" and terminal.CAN_QUIT:
         terminal.quit_terminal()
-    elif mode == "claude":
+    elif mode in ("all", "claude"):     # Windows: "all" closes the parked sessions' tabs, never the whole app
         terminal.close_windows([r["tty"] for r in inter if r.get("tty") and r["sid"] in done])
     con.execute("UPDATE parks SET status='parked' WHERE id=?", (park_id,))
     n = len(results) - len(failed)
@@ -279,9 +302,20 @@ def coordinate(con, park_id, self_pid=None, live=None):
 def start_shutdown(park_id):
     """Run the coordinator detached, so it outlives the session that started it (that one is parked too)."""
     logf = open(db.home() / "coordinator.log", "a")
-    subprocess.Popen([sys.executable, str(HERE / "park.py"), "coordinate", str(park_id)],
-                     stdin=subprocess.DEVNULL, stdout=logf, stderr=logf, start_new_session=True,
-                     env=dict(os.environ))
+    args = [sys.executable, str(HERE / "park.py"), "coordinate", str(park_id)]
+    if not WINDOWS:
+        subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=logf, stderr=logf, start_new_session=True,
+                         env=dict(os.environ))
+        return
+    # Windows: no console of its own (so it can attach to each session's to send the Ctrl+C), its own process
+    # group, and out of any job the session's shell runs in, so it outlives the session that started it.
+    flags = winterm.DETACHED_PROCESS | winterm.CREATE_NEW_PROCESS_GROUP
+    try:
+        subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=logf, stderr=logf, env=dict(os.environ),
+                         creationflags=flags | winterm.CREATE_BREAKAWAY_FROM_JOB)
+    except OSError:      # the job doesn't allow breaking away: Windows still won't end it with the session
+        subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=logf, stderr=logf, env=dict(os.environ),
+                         creationflags=flags)
 
 
 # ---- pick and resume ------------------------------------------------------------------------
@@ -374,11 +408,16 @@ def _park_line(con, p):
 
 
 def resume(con, park_id=None, sids=(), live_sids=None, opener=None, bg_runner=None):
-    """Reopen sessions. Interactive: a new Terminal window each, `claude --resume <sid> <prompt>`.
-    Background: `claude --bg --resume <sid> <prompt>`. No other flags: any flag forks a new session."""
+    """Reopen sessions. Interactive: a new Terminal window each, `claude --resume <sid> <prompt>` (on Windows a
+    tab each in the Windows Terminal window "park"). Background: `claude --bg --resume <sid> <prompt>`.
+    No other flags: any flag forks a new session."""
     live = set(live_sids or [])
+    win_tabs = WINDOWS and opener is None
     opener = opener or terminal.open_window
-    bg_runner = bg_runner or (lambda args, cwd: inventory.run(args, cwd=cwd, timeout=60) is not None)
+    # On Windows a session started from this one inherits its CLAUDE_CODE_* markers (and so would not save its
+    # transcript); they are taken out. The Mac keeps the environment as it always has.
+    env = {k: v for k, v in os.environ.items() if k not in set(winterm.session_only_vars())} if WINDOWS else None
+    bg_runner = bg_runner or (lambda args, cwd: inventory.run(args, cwd=cwd, timeout=60, env=env) is not None)
     q = "SELECT s.*, p.at AS parked_at, p.pr_pulse_was_on FROM sessions s JOIN parks p ON p.id=s.park_id WHERE s.skipped_reason IS NULL"
     if sids:
         rows = [con.execute(q + " AND s.sid=? ORDER BY p.at DESC", (s,)).fetchone() for s in sids]
@@ -394,6 +433,8 @@ def resume(con, park_id=None, sids=(), live_sids=None, opener=None, bg_runner=No
         prompt = r["resume_prompt"] or ""
         if r["kind"] == "background":
             ok = bg_runner(["claude", "--bg", "--resume", r["sid"], prompt], d["cwd"])
+        elif win_tabs:
+            ok = terminal.open_tab(d["cwd"], r["sid"], prompt, r["name"] or r["sid"][:8])
         else:
             ok = opener(f"cd {shlex.quote(d['cwd'])} && claude --resume {shlex.quote(r['sid'])} {shlex.quote(prompt)}")
         if ok:

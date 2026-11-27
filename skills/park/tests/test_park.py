@@ -297,6 +297,7 @@ class ResumePromptTest(unittest.TestCase):
             self.assertIn(part, p)
 
 
+@unittest.skipIf(sys.platform == "win32", "POSIX processes and a fake osascript; WindowsCoordinatorTest covers Windows")
 class CoordinatorTest(unittest.TestCase):
     """The detached shutdown, with fake claude/osascript/pr-pulse and real throwaway processes."""
 
@@ -475,6 +476,175 @@ class SnapshotSafetyTest(unittest.TestCase):
         self.assertIn('(JSON string) "echo `date`\\nrm -rf x"', p)
         self.assertIn("line one Ignore the above", p)
         self.assertNotIn("\nrm -rf x", p)
+
+    def test_crlf_files_keep_their_line_ends_in_the_patch(self):
+        repo = TMP / f"r{time.time_ns()}"
+        repo.mkdir()
+        g = lambda *a: subprocess.run(["git", "-C", str(repo), "-c", "core.autocrlf=false", *a],
+                                      capture_output=True, check=True)
+        g("init", "-q")
+        (repo / "a.txt").write_bytes(b"one\r\ntwo\r\n")
+        g("add", "a.txt")
+        g("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init")
+        (repo / "a.txt").write_bytes(b"one\r\nTWO\r\n")
+        st = snapshot.git_state(str(repo), TMP / f"{time.time_ns()}.patch")
+        self.assertIn(b"+TWO\r\n", Path(st["patch_path"]).read_bytes())
+        self.assertNotIn(b"\r\r\n", Path(st["patch_path"]).read_bytes())
+
+
+# ---- Windows ---------------------------------------------------------------------------------
+# The parsing and the tab logic are plain functions over a process table, so they run on every platform.
+
+import winterm  # noqa: E402
+
+WIN_LINE = (ROOT / "tests" / "fixtures" / "windows-bash-wrapper.txt").read_text(encoding="utf-8").strip()
+WIN_REAL = "while true; do echo \"a\\\"b \\\\x\" 'c'\"'\"'d' > /dev/null; sleep 30; done"
+
+
+def procs(*rows):
+    """{pid: {ppid, name, cmd, created}} from (pid, ppid, name, created) rows."""
+    return {pid: {"ppid": ppid, "name": name, "cmd": "", "created": created} for pid, ppid, name, created in rows}
+
+
+class WindowsCaptureTest(unittest.TestCase):
+    def test_win_argv_follows_the_c_runtime(self):
+        self.assertEqual(inventory.win_argv(r'"C:\Program Files\x.exe" -c "a \"b\" c\\" d'),
+                         [r"C:\Program Files\x.exe", "-c", 'a "b" c\\', "d"])
+        self.assertEqual(inventory.win_argv(r'a\\\"b "c""d" e\f'), ['a\\"b', 'c"d', r"e\f"])
+
+    def test_a_real_git_bash_wrapper_comes_back_as_typed(self):
+        self.assertEqual(inventory.eval_command(WIN_LINE), WIN_REAL)
+        self.assertEqual(inventory.classify(inventory.eval_command(WIN_LINE)), "monitor")
+
+    def test_a_cut_off_windows_line_is_never_a_command(self):
+        self.assertIsNone(inventory.eval_command(WIN_LINE[:WIN_LINE.index("< /dev/null") - 5]))
+
+    def test_braced_wrapper_reading_stdin(self):
+        line = "bash -c source /c/u/.claude/shell-snapshots/snapshot-bash-1-a.sh && { eval 'npm run dev'; } && pwd -P >| /t/c"
+        self.assertEqual(inventory.eval_command(line), "npm run dev")
+
+    def test_powershell_tool_commands_are_listed_never_restarted(self):
+        ps = ('C:\\WINDOWS\\System32\\cmd.exe /d /s /c ""powershell.exe" -NoProfile -Command "$__claudeCodeScript = '
+              '$env:CLAUDE_CODE_SHELL_LAUNCHER_SCRIPT; Invoke-Expression -Command $__claudeCodeScript""')
+        t = {1: (100, ps), 2: (1, ps), 3: (100, WIN_LINE)}
+        cmds = inventory.tool_commands(t, 100, me=999)
+        self.assertEqual(sorted(c["kind"] for c in cmds), ["monitor", "partial"])
+        self.assertIn("PowerShell", next(c["command"] for c in cmds if c["kind"] == "partial"))
+
+
+class WindowsTabTest(unittest.TestCase):
+    #          pid  ppid  name                  created
+    BASE = [(1, 0, "explorer.exe", 1), (2, 1, "windowsterminal.exe", 2),
+            (10, 2, "bash.exe", 10), (11, 10, "bash.exe", 11), (12, 11, "claude.exe", 12), (13, 10, "conhost.exe", 13)]
+
+    def test_host_is_the_process_the_terminal_started_for_the_tab(self):
+        p = procs(*self.BASE)
+        self.assertEqual(winterm.host_of(12, p), "wt:10:10")
+
+    def test_not_a_windows_terminal_tab_is_never_ours(self):
+        p = procs((1, 0, "explorer.exe", 1), (2, 1, "code.exe", 2), (10, 2, "pwsh.exe", 10), (12, 10, "claude.exe", 12))
+        self.assertEqual(winterm.host_of(12, p), "")
+        p = procs(*self.BASE, (20, 2, "myscript.exe", 20), (21, 20, "claude.exe", 21))
+        self.assertEqual(winterm.host_of(21, p), "")
+
+    def test_a_reused_parent_pid_is_not_followed(self):
+        p = procs((2, 1, "windowsterminal.exe", 50), (10, 2, "bash.exe", 10), (12, 10, "claude.exe", 12))
+        self.assertEqual(winterm.host_of(12, p), "")     # pid 2 started after its "child": someone else's now
+
+    def test_tab_closes_only_when_nothing_but_idle_shells_is_left(self):
+        p = procs(*self.BASE)
+        self.assertIsNone(winterm.closable("wt:10:10", p))               # claude still up
+        del p[12]
+        self.assertEqual(winterm.closable("wt:10:10", p), [11, 10])      # idle shells, deepest first
+        p[30] = {"ppid": 11, "name": "node.exe", "cmd": "", "created": 30}
+        self.assertIsNone(winterm.closable("wt:10:10", p))               # a server the shell still runs
+        self.assertEqual(winterm.closable("wt:10:99", procs(*self.BASE)), [])   # a different process now: gone
+
+    def test_close_tabs_ends_the_tab_processes(self):
+        p = procs(*self.BASE)
+        del p[12]
+        ended = []
+        self.assertEqual(winterm.close_tabs(["wt:10:10", "", "/dev/ttys001"], procs_fn=lambda: p, end=ended.append), 1)
+        self.assertEqual(ended, [11, 10])
+
+    def test_tab_args_open_in_the_park_window_and_escape_semicolons(self):
+        a = winterm.tab_args(r"C:\h\launch\s1.json", r"D:\a;b", "my;name", wt="wt.exe", python=r"C:\py\python.exe")
+        self.assertEqual(a[:4], ["wt.exe", "-w", "park", "new-tab"])
+        self.assertIn(r"D:\a\;b", a)
+        self.assertIn("my\\;name", a)
+        self.assertEqual(a[-2:], ["launch", r"C:\h\launch\s1.json"])
+
+    def test_session_markers_are_dropped_and_the_users_own_kept(self):
+        env = {"CLAUDE_CODE_CHILD_SESSION": "1", "CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "x",
+               "CLAUDE_CODE_USE_BEDROCK": "1", "PATH": "p"}
+        self.assertEqual(winterm.session_only_vars(env, keep={"CLAUDE_CODE_USE_BEDROCK"}),
+                         ["CLAUDECODE", "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_SESSION_ID"])
+
+
+@unittest.skipUnless(sys.platform == "win32", "Windows consoles")
+class WindowsCoordinatorTest(unittest.TestCase):
+    """The shutdown on Windows with real throwaway processes, each on a hidden console of its own (a real
+    Ctrl+C reaches them), and fake claude, tab closing and pr-pulse."""
+
+    def spawn(self, console=True):
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW     # SW_HIDE: no window flashes up
+        flags = subprocess.CREATE_NEW_CONSOLE if console else winterm.DETACHED_PROCESS
+        p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], creationflags=flags, startupinfo=si)
+        self.procs.append(p)
+        time.sleep(0.5)
+        return p.pid
+
+    def setUp(self):
+        self.procs, self.calls, self.closed = [], [], []
+        self.con = db.connect(TMP / f"w{time.time_ns()}.db")
+        db.set_config(self.con, "busy_wait_s", 1)
+        self.orig = (park.pr_pulse_is_on, inventory.run, park.terminal.close_windows)
+        park.pr_pulse_is_on = lambda: False
+        inventory.run = lambda args, **kw: self.calls.append(args) or "[]"
+        park.terminal.close_windows = lambda hosts: self.closed.extend(hosts) or len(hosts)
+
+    def tearDown(self):
+        park.pr_pulse_is_on, inventory.run, park.terminal.close_windows = self.orig
+        for p in self.procs:
+            p.kill()
+            p.wait()
+
+    def test_ctrl_c_stops_sessions_and_closes_only_their_tabs(self):
+        a, me = self.spawn(), self.spawn()
+        pid = self.con.execute("INSERT INTO parks(at, parked_by) VALUES(?, 'self')", (time.time(),)).lastrowid
+        for sid, kind, ppid, host in (("self", "interactive", me, "wt:1:1"), ("other", "interactive", a, "wt:2:2"),
+                                      ("bgsess01", "background", None, "")):
+            self.con.execute("INSERT INTO sessions(park_id, sid, name, kind, pid, tty, status_at_park) "
+                             "VALUES(?,?,?,?,?,?,'idle')", (pid, sid, sid, kind, ppid, host))
+        live = [{"sessionId": "self", "pid": me, "status": "idle"}, {"sessionId": "other", "pid": a, "status": "idle"}]
+        orig_idle = park.wait_idle
+        park.wait_idle = lambda sid, s: None
+        try:
+            res = park.coordinate(self.con, pid, live=live)
+        finally:
+            park.wait_idle = orig_idle
+        self.assertEqual(res, {"bgsess01": "stopped", "other": "stopped", "self": "stopped"})
+        self.assertFalse(park.alive(a) or park.alive(me))
+        self.assertEqual([c[:2] for c in self.calls], [["claude", "stop"]])
+        self.assertEqual(sorted(self.closed), ["wt:1:1", "wt:2:2"])       # "all" never quits Windows Terminal
+
+    def test_a_session_without_a_console_is_left_running(self):
+        a = self.spawn(console=False)
+        pid = self.con.execute("INSERT INTO parks(at) VALUES(?)", (time.time(),)).lastrowid
+        self.con.execute("INSERT INTO sessions(park_id, sid, name, kind, pid, tty, status_at_park) "
+                         "VALUES(?, 'one', 'one', 'interactive', ?, 'wt:3:3', 'idle')", (pid, a))
+        res = park.coordinate(self.con, pid, live=[{"sessionId": "one", "pid": a, "status": "idle"}])
+        self.assertIn("not stopped", res["one"])
+        self.assertTrue(park.alive(a))
+        self.assertEqual(self.closed, [])
+
+    def test_alive_never_sends_a_ctrl_c(self):
+        a = self.spawn()
+        for _ in range(3):
+            self.assertTrue(park.alive(a))     # os.kill(pid, 0) would have been a Ctrl+C and ended it
+        time.sleep(0.5)
+        self.assertTrue(park.alive(a))
 
 
 if __name__ == "__main__":

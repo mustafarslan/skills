@@ -1,3 +1,14 @@
 #!/bin/sh
 # park CLI: see park.py for the commands.
-exec python3 "$(dirname "$0")/park.py" "$@"
+# The first Python 3 that actually runs: on Windows `python3` may be missing, or the Microsoft Store's stub.
+here=$(dirname "$0")
+for py in python3 python; do
+  if "$py" -c "import sys; sys.exit(sys.version_info < (3, 8))" >/dev/null 2>&1; then
+    exec "$py" "$here/park.py" "$@"
+  fi
+done
+if py -3 -c "" >/dev/null 2>&1; then
+  exec py -3 "$here/park.py" "$@"
+fi
+echo "park needs Python 3.8 or newer on PATH (python3, python or py)" >&2
+exit 127

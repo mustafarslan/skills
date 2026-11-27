@@ -233,3 +233,41 @@ after 30 days by default.
   command ("Unknown command: /park"). The prompt now never starts with "/", and a test guards it.
 - **Changed:** a full park now stops pr-pulse's running workers too. They still aren't reopened.
 - **Still open:** a full park (it quits Terminal) needs the owner's go.
+
+## Windows (2026-11-27, Claude Code 2.1.332, Windows 11, Windows Terminal 1.25, Git Bash)
+What stands in for each Mac piece (`scripts/winterm.py`; `terminal.py` switches to it on Windows):
+- **SIGINT** is a Ctrl+C event on the session's console, sent by a detached helper that attaches to it
+  (`AttachConsole` + `GenerateConsoleCtrlEvent`); Node reads it as SIGINT. **SIGTERM** is `TerminateProcess`.
+  `alive()` never calls `os.kill(pid, 0)`: on Windows signal 0 *is* a Ctrl+C.
+- **The process table** comes from `Win32_Process` (pid, parent, name, command line, start time). A parent pid
+  whose process started after its child is someone else's (Windows reuses pids) and is dropped.
+- **Bash tool commands** are a Windows command line, `"…\bash.exe" -c "… && { eval '<cmd>' < /dev/null; } && pwd -P …"`:
+  its `-c` argument is split the C-runtime way first, then read as on the Mac. **PowerShell tool commands**
+  pass their script in an environment variable, so they are listed as not restarted.
+- **A window's tty** is the tab's host: the process Windows Terminal started for the tab (`wt:<pid>:<start>`),
+  found only when every process between it and claude is a shell or launcher.
+- **Closing windows:** a tab closes when nothing but idle shells (and park's launcher) is left in it; its
+  processes end with exit code 0, so Windows Terminal closes it as after a normal exit. **Windows Terminal is
+  never quit**: `quit_terminal all` closes the parked sessions' tabs only.
+- **Opening a window** is a tab in the Windows Terminal window `park` (`wt -w park new-tab -d <cwd> python
+  winterm.py launch <job>`). The job file holds the exact argv, so the prompt reaches `claude --resume` whole
+  (newlines, quotes, backticks, `;`, `%VAR%`): no shell quotes it. A shell is left when claude exits.
+- **The environment:** a tab opened from a session inherits that session's `CLAUDE_CODE_*` markers, and a
+  session started with `CLAUDE_CODE_CHILD_SESSION` saves no transcript. Every `CLAUDE*` variable not in the
+  user's own environment (the registry) is taken out, for tabs and for `claude --bg`.
+- **The coordinator** starts detached, in its own process group and out of the caller's job (falling back to
+  staying in it if the job forbids that).
+- **Also fixed for both:** the patch is written as bytes (text mode turned CRLF files' line ends into LF, and
+  Windows text mode turns every LF into CRLF); pr-pulse's setting is read with Python's sqlite3 (Windows has no
+  `sqlite3` program); `claude agents` output is read as UTF-8; the `park` launcher finds `python3`, `python`
+  or `py` (Windows may have the Store's `python3` stub).
+
+Live run on Windows (2026-11-27), one throwaway session in a scratch folder, `--only` and a scratch `PARK_HOME`:
+- one Ctrl+C stopped an idle session in under a second, under PowerShell and under Git Bash, and its
+  transcript stayed whole (every line valid JSON); its tab then closed;
+- `park doctor` ok; `park plan --only` found its Monitor (`while true; do sleep 20; done`) to restart, its
+  tab and the calling session (`self`), and skipped the 7 other sessions;
+- `park shutdown`: stopped, tab closed, `park show` says stopped;
+- `park resume`: a tab in the `park` window, the same session id (one transcript), the prompt arrived whole,
+  and the session restarted its Monitor.
+- **Still open:** a full park on Windows (every session) needs the owner's go.

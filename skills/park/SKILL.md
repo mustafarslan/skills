@@ -1,6 +1,6 @@
 ---
 name: park
-description: Park every Claude Code session on this Mac at the end of the day - snapshot each one (its folder and branch, uncommitted work as a patch, the watchers, background shells and crons running inside it), shut them all down and quit Terminal - then bring them back later with /park --resume, each in its own Terminal window, restarting what was running. Use when the user says "/park", "park everything", "park my sessions", "shut everything down for today", "/park --resume", "bring my sessions back", "resume yesterday's sessions", or asks to resume a park from another day or a session by name. Flags --dry-run, --only NAME, --exclude NAME, --notes, --label TEXT; for resume --day DATE, --name PART, --pick, --unresumed.
+description: Park every Claude Code session on this computer (a Mac with Terminal, or Windows with Windows Terminal) at the end of the day - snapshot each one (its folder and branch, uncommitted work as a patch, the watchers, background shells and crons running inside it), shut them all down and quit Terminal (on Windows, close their tabs) - then bring them back later with /park --resume, each in its own Terminal window (on Windows, a tab each in one window), restarting what was running. Use when the user says "/park", "park everything", "park my sessions", "shut everything down for today", "/park --resume", "bring my sessions back", "resume yesterday's sessions", or asks to resume a park from another day or a session by name. Flags --dry-run, --only NAME, --exclude NAME, --notes, --label TEXT; for resume --day DATE, --name PART, --pick, --unresumed.
 allowed-tools: Bash(${CLAUDE_SKILL_DIR}/scripts/park *), AskUserQuestion, SendMessage, ListAgents, TaskStop
 ---
 
@@ -16,10 +16,16 @@ subagents, crons) ends when it stops; park writes it down and starts it again on
 beginning. A turn mid-way, a long build or a test run is cut off. pr-pulse's background service and
 other launchd agents keep running.
 
+**On Windows** (Windows Terminal, Git Bash for the Bash tool): "quit Terminal" below means closing the parked
+sessions' own tabs (Windows Terminal itself is never quit), and resumed sessions open as tabs of one Windows
+Terminal window named `park`. A tab whose shell still runs something other than the session stays open. Commands
+the PowerShell tool runs can't be read from outside, so they are listed as not restarted.
+
 ## /park
 
 1. **Can we?** Run `P doctor`. If `ok` is false, say each problem in one line (the Automation
-   permission one tells the user exactly where to click) and stop. Nothing is touched yet.
+   permission one, and on Windows the Windows Terminal one, tells the user exactly where to click) and stop.
+   Nothing is touched yet.
 2. **Snapshot.** Run `P plan` with the user's flags (`--only X`, `--exclude X`, `--label "…"`). It
    creates a planned park and stops nothing. From its JSON:
    - `parked`: sessions that will be parked (with branch, changed files, untracked files, and in
@@ -36,7 +42,7 @@ other launchd agents keep running.
    for busy ones. Say which ones answered. (Write `P` out as its full path in the message: the other
    session doesn't know it.)
 4. **Ask once** (AskUserQuestion), with the counts in the question: "Park N sessions (skip M:
-   pr-pulse workers…), switch pr-pulse off and quit Terminal?" Before it, list every `restart`
+   pr-pulse workers…), switch pr-pulse off and quit Terminal?" (on Windows: "…and close their tabs?") Before it, list every `restart`
    command and cron prompt under its session, so nothing is started again on resume unseen, and say
    how many `not_restarted` commands each has (show them if the user asks). Options:
    - **Park now (Recommended)**
@@ -68,8 +74,8 @@ other launchd agents keep running.
    **Let me pick** (then one multiSelect question with the names, up to 4 per question) / **Not now**.
    `--pick` goes straight to picking.
 4. **Go.** `P resume --park <id>`, or `P resume --sid <sid> …` for a pick or a name search. Each
-   interactive session opens in its own Terminal window; background ones come back in the
-   background. Each one's first message tells it to check its folder for drift, restart its watchers
+   interactive session opens in its own Terminal window (on Windows, a tab in the Windows Terminal
+   window `park`); background ones come back in the background. Each one's first message tells it to check its folder for drift, restart its watchers
    and crons, and continue. pr-pulse is switched back on if it was on.
 5. Reply with its lines as they are, plus one line: "Each session checks its folder and restarts its
    watchers first; background ones: `claude agents`."

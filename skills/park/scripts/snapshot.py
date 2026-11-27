@@ -2,6 +2,7 @@
 and the prompt that tells the resumed session to check drift and start that work again."""
 import json
 import re
+import subprocess
 import time
 from pathlib import Path
 
@@ -36,10 +37,16 @@ def git_state(cwd, patch_file):
     st["unpushed"] = int(ahead) if ahead.isdigit() else 0
     # --binary keeps binary changes; with no commit yet (unborn HEAD) the staged work is what can be saved.
     base = ["diff", "--binary", "HEAD"] if st["head"] and st["head"] != "HEAD" else ["diff", "--binary", "--cached"]
-    diff = inventory.run(["git", "-C", cwd, *base]) or ""
+    # Bytes, never text: decoding would turn a file's CRLF line ends into LF (and writing on Windows would
+    # turn every LF into CRLF), and the patch would no longer apply.
+    try:
+        p = subprocess.run(["git", "-C", cwd, *base], capture_output=True, timeout=120)
+        diff = p.stdout if p.returncode == 0 else b""
+    except (OSError, subprocess.SubprocessError):
+        diff = b""
     if diff.strip():
         Path(patch_file).parent.mkdir(parents=True, exist_ok=True)
-        Path(patch_file).write_text(diff)
+        Path(patch_file).write_bytes(diff)
         st["patch_path"] = str(patch_file)
     return st
 
