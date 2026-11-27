@@ -30,6 +30,18 @@
       "repository": "https://github.com/mustafarslan/skills",
       "license": "MIT",
       "category": "productivity"
+    },
+    {
+      "name": "reclaim",
+      "source": "./plugins/reclaim",
+      "description": "Frees disk space: removes old and merged git worktrees (backing up uncommitted work first), revives a Docker Desktop hung on a full disk, and prunes old Docker data. Asks before every removal; never touches Docker volumes. Needs only git and python3.",
+      "author": {
+        "name": "mustafarslan"
+      },
+      "homepage": "https://github.com/mustafarslan/skills",
+      "repository": "https://github.com/mustafarslan/skills",
+      "license": "MIT",
+      "category": "productivity"
     }
   ]
 }

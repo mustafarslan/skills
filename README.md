@@ -22,6 +22,7 @@
 | [park](skills/park/SKILL.md) | **Beta, macOS (Terminal.app) and Windows (Windows Terminal).** At the end of the day, `/park` snapshots every Claude Code session on your computer (folder, branch, uncommitted work as a patch, the watchers, background shells and crons running inside it), stops them all and quits Terminal (on Windows, closes their tabs); `/park --resume` brings each conversation back in its own window (on Windows, a tab each) and restarts what was running. Never commits, stashes or resets. |
 | [system-design](skills/system-design/SKILL.md) | Designs, reviews and stress-tests systems at a staff-engineer bar: locks requirements and non-goals first, runs the capacity math in a script, defaults to the boring design, pushes back on steers that break a requirement, walks failure cascades, and ends with a trade-off table whose every row says when to change the decision. Modes for real designs (design doc + ADRs), mock interviews (as candidate or interviewer), reviews and deep dives. Its calculator also sizes restore time against RTO, LLM serving (tokens, cost, KV cache), stream partitions, cost from your prices, and the 10x/100x path; its gate rejects vague, strawman or already-fired triggers. `--walkthrough` adds an animated, step-by-step page of the design (brief, numbers, draft, what breaks, each fix, one failure walked hop by hop, trade-offs), checked against the doc and the calculator. Ships with a 19-case eval suite. |
 | [pr-pulse](plugins/pr-pulse/README.md) | **A separate plugin, macOS only.** Runs your PR loop across all your Claude Code sessions and repos: announces new PRs in Slack, runs `/pr-review`, `/pr-feedback` and `/pr-merge` in idle sessions or background workers, asks your decisions from macOS notifications, and posts nothing in your name until you have written your own top lines. |
+| [reclaim](plugins/reclaim/README.md) | **A separate plugin; macOS fully, worktrees also on Linux.** When the disk is full, `/reclaim` removes git worktrees you no longer need (backing up uncommitted work first and re-checking each one right before removal), gets a Docker Desktop that hung on a full disk running again, and prunes old Docker data. Asks before every removal, never touches Docker volumes, and needs only `git` and `python3`. |
 
 The PR skills and `bugfix` need the [GitHub CLI](https://cli.github.com/) (`gh`), authenticated. `bugfix` reads the issue from whichever tracker is connected to Claude Code (Jira, Linear, and so on), falling back to GitHub Issues.
 
@@ -57,6 +58,7 @@ Plugin marketplace (all skills and agents):
 /plugin marketplace add mustafarslan/skills
 /plugin install skills@mustafarslan-skills
 /plugin install pr-pulse@mustafarslan-skills   # optional, macOS: the pr-pulse plugin
+/plugin install reclaim@mustafarslan-skills    # optional: free disk space (old worktrees, Docker)
 ```
 
 Or copy one skill:

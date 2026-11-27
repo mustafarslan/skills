@@ -1,0 +1,10 @@
+{
+  "description": "reclaim: warn at session start when the disk is nearly full",
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [
+        { "type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}\"/scripts/low-disk.sh", "timeout": 10 }
+      ] }
+    ]
+  }
+}
