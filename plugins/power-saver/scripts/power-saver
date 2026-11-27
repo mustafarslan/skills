@@ -1,0 +1,14 @@
+#!/bin/sh
+# power-saver CLI: see power_saver.py for the commands.
+# The first Python 3 that actually runs: on Windows `python3` may be missing, or the Microsoft Store's stub.
+here=$(dirname "$0")
+for py in python3 python; do
+  if "$py" -c "import sys; sys.exit(sys.version_info < (3, 9))" >/dev/null 2>&1; then
+    exec "$py" "$here/power_saver.py" "$@"
+  fi
+done
+if py -3 -c "import sys; sys.exit(sys.version_info < (3, 9))" >/dev/null 2>&1; then
+  exec py -3 "$here/power_saver.py" "$@"
+fi
+echo "power-saver needs Python 3.9 or newer on PATH (python3, python or py)" >&2
+exit 127

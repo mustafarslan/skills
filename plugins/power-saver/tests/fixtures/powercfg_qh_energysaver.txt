@@ -1,0 +1,30 @@
+Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced)
+  GUID Alias: SCHEME_BALANCED
+  Subgroup GUID: de830923-a562-41af-a086-e3a2c6bad2da  (Energy Saver settings)
+    GUID Alias: SUB_ENERGYSAVER
+    Power Setting GUID: 13d09884-f74e-474a-a852-b6bde8ad03a8  (Display brightness weight)
+      GUID Alias: ESBRIGHTNESS
+      Minimum Possible Setting: 0x00000000
+      Maximum Possible Setting: 0x00000064
+      Possible Settings increment: 0x00000001
+      Possible Settings units: %
+    Current AC Power Setting Index: 0x00000046
+    Current DC Power Setting Index: 0x00000046
+
+    Power Setting GUID: 5c5bb349-ad29-4ee2-9d0b-2b25270f7a81  (Energy Saver Policy)
+      GUID Alias: ESPOLICY
+      Possible Setting Index: 000
+      Possible Setting Friendly Name: User
+      Possible Setting Index: 001
+      Possible Setting Friendly Name: Aggressive
+    Current AC Power Setting Index: 0x00000000
+    Current DC Power Setting Index: 0x00000001
+
+    Power Setting GUID: e69653ca-cf7f-4f05-aa73-cb833fa90ad4  (Charge level)
+      GUID Alias: ESBATTTHRESHOLD
+      Minimum Possible Setting: 0x00000000
+      Maximum Possible Setting: 0x00000064
+      Possible Settings increment: 0x00000001
+      Possible Settings units: Percent battery charge
+    Current AC Power Setting Index: 0x00000000
+    Current DC Power Setting Index: 0x0000001e

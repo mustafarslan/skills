@@ -1,0 +1,21 @@
+
+==============NVSMI LOG==============
+
+Timestamp                                              : Fri Nov 27 23:33:48 2026
+Driver Version                                         : 621.40 [Deprecated; will be removed in CUDA 14.0. Use KMD Version instead]
+CUDA Version                                           : 13.5 [Deprecated; will be removed in CUDA 14.0. Use CUDA UMD Version instead]
+KMD Version                                            : 621.40
+CUDA UMD Version                                       : 13.5
+
+Attached GPUs                                          : 1
+GPU 00000000:01:00.0
+    Temperature
+        GPU Current Temp                               : 43.71 C
+        GPU Current Max Temp                           : N/A
+        GPU Current T.Limit Temp                       : 46 C
+        GPU Shutdown T.Limit Temp Specification        : -5 C
+        GPU Slowdown T.Limit Temp Specification        : -2 C
+        GPU Max Operating T.Limit Temp Specification   : 0 C
+        GPU Target Temperature Specification           : N/A
+        Memory Current Temp                            : N/A
+        Memory Max Operating T.Limit Temp Specification: N/A
