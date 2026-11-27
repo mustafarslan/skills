@@ -1,0 +1,3 @@
+#!/bin/sh
+# reclaim CLI: see reclaim.py for the commands.
+exec python3 "$(dirname "$0")/reclaim.py" "$@"
