@@ -77,6 +77,20 @@ In Docker, reclaim removes unused images and build cache older than your number 
 you pick that have been stopped that long or are stuck restarting. Containers on your keep-list are never
 offered. **Volumes are never removed**: they hold your databases.
 
+## Which repos it cleans
+
+You can list repos one by one, or give whole folders. Both work together.
+
+- `repos`: exact main checkouts. `/reclaim:init` suggests the ones your recent sessions used.
+- `roots`: folders that hold your repos, for example `~/Projects` and `/Volumes/MyDisk/projects`. Every scan
+  walks each folder two levels deep and picks up the repos it finds, so a repo cloned tomorrow is covered
+  with no setup. It never follows symlinks, never leaves the folder's disk, skips dot folders,
+  `node_modules` and other build folders, never looks inside a repo, and stops at 2,000 folders per root
+  with a warning. A linked worktree is never counted as a repo of its own; it is found through its main
+  repo. A folder that is missing (an unplugged disk) is skipped with a warning.
+- To clean everything under two folders: `config set roots '["~/Projects","/Volumes/MyDisk/projects"]'`.
+  `config preview` lists the repos that would be scanned.
+
 ## Where data lives
 
 - Settings: `config.json` in the plugin's data folder (`~/.claude/plugins/data/reclaim-<marketplace>/`). The

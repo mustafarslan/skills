@@ -22,6 +22,7 @@ def default_backup_dir():
 
 DEFAULTS = {
     'repos': [],
+    'roots': [],
     'backup_dir': default_backup_dir(),
     'days': 3,
     'keep_containers': [],
@@ -97,6 +98,7 @@ def _is_num(v):
 
 VALIDATORS = {
     'repos': lambda v: isinstance(v, list) and all(isinstance(x, str) for x in v),
+    'roots': lambda v: isinstance(v, list) and all(isinstance(x, str) for x in v),
     'backup_dir': lambda v: isinstance(v, str) and v != '',
     'days': lambda v: _is_num(v) and v >= 0,
     'keep_containers': lambda v: isinstance(v, list) and all(isinstance(x, str) for x in v),
