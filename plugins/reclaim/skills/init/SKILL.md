@@ -22,11 +22,14 @@ never in a repo.
    For one by one, run `R config detect`. One AskUserQuestion, multiSelect: "Which repos should reclaim clean
    worktrees for?" Offer up to 4, the most worktrees first, as "`<path>` · `<n>` worktrees". Other: they
    type a path. Save with `R config set repos '["/path/a","/path/b"]'`.
+   On Windows, write paths in these JSON lists with forward slashes (`'["C:/Users/me/Projects","D:/work"]'`):
+   a backslash must be doubled inside JSON, and a forward slash needs nothing.
 3. **Age and backups.** One AskUserQuestion with two questions:
    - "Remove worktrees with no activity for how long?" with options 3 days (default), 7 days and 14 days.
      Save with `R config set days 3`.
    - "Where should uncommitted work be backed up before a worktree is removed?" Offer the current
-     `backup_dir` first and `~/Desktop/worktree-backups`. Save with `R config set backup_dir PATH`.
+     `backup_dir` first, then `~/Desktop/worktree-backups` on a Mac or `~/reclaim-backups` elsewhere. Save
+     with `R config set backup_dir PATH`.
 4. **Containers to keep.** Run `docker ps -a --format '{{.Names}}'`. If Docker isn't installed or running, skip
    this step and say they can re-run init later. Otherwise one AskUserQuestion, multiSelect: "Which
    containers must reclaim never remove?" Offer the running ones, the local database first. Other:

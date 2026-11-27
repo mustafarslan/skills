@@ -1,11 +1,11 @@
 """Shared helpers: running commands, the config file, free disk space."""
 import json
 import os
-import shutil
-import subprocess
 import sys
 import time
 from pathlib import Path
+
+import plat
 
 # Folders that are rebuilt from scratch, so their age and contents never matter.
 BUILD_DIRS = {
@@ -28,6 +28,10 @@ DEFAULTS = {
     'keep_containers': [],
     'warn_gb': 15,
     'hook': True,
+    'cache_days': 30,
+    'cache_dirs': [],
+    'buildirs_in_main': False,
+    'build_dir_names': [],
 }
 
 
@@ -77,19 +81,13 @@ def write_atomic(path, text):
 
 def run(cmd, cwd=None, check=False, timeout=120):
     """Run a command; return (returncode, stdout, stderr). Never raises for a missing binary."""
-    try:
-        p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
-    except FileNotFoundError as exc:
-        return 127, '', str(exc)
-    except subprocess.TimeoutExpired:
-        return 124, '', f'timed out after {timeout}s: {" ".join(cmd)}'
-    if check and p.returncode != 0:
-        raise RuntimeError(f'{" ".join(cmd)} failed: {p.stderr.strip()}')
-    return p.returncode, p.stdout, p.stderr
+    return plat.run(cmd, cwd=cwd, check=check, timeout=timeout)
 
 
 def git(path, *args, timeout=120):
-    return run(['git', '-C', str(path), *args], timeout=timeout)
+    # Windows: paths past 260 characters (deep node_modules) work only with core.longpaths.
+    extra = ['-c', 'core.longpaths=true'] if plat.WINDOWS else []
+    return run(['git', '-C', str(path), *extra, *args], timeout=timeout)
 
 
 def _is_num(v):
@@ -104,6 +102,11 @@ VALIDATORS = {
     'keep_containers': lambda v: isinstance(v, list) and all(isinstance(x, str) for x in v),
     'warn_gb': lambda v: _is_num(v) and v >= 0,
     'hook': lambda v: isinstance(v, bool),
+    'cache_days': lambda v: _is_num(v) and v >= 0,
+    'cache_dirs': lambda v: isinstance(v, list) and all(isinstance(x, str) for x in v),
+    'buildirs_in_main': lambda v: isinstance(v, bool),
+    'build_dir_names': lambda v: isinstance(v, list) and all(
+        isinstance(x, str) and x not in ('', '.', '..') and not set(x) & set('/\\') for x in v),
 }
 
 
@@ -140,17 +143,49 @@ def save_config(cfg):
 
 
 def free_bytes(path='/'):
-    return shutil.disk_usage(path).free
+    return plat.free_bytes(path)
 
 
 def gb(n):
     return round(n / 1e9, 1)
 
 
+def watched_paths(cfg, docker_disks=()):
+    """[(what, path)]: everything reclaim fills or frees, whose drive's free space matters."""
+    out = [('repos', r) for r in cfg.get('repos', [])] + [('repo folders', r) for r in cfg.get('roots', [])]
+    out.append(('backups', cfg.get('backup_dir') or default_backup_dir()))
+    out += [("Docker's disk", d) for d in docker_disks]
+    return out
+
+
+def drives(watched):
+    """Free space on each drive or volume that holds one of `watched` ([(what, path)]), the system's first.
+
+    [{'volume', 'free_gb', 'total_gb', 'holds': [what, ...]}]. A path on a drive that isn't there (unplugged)
+    is left out. On macOS, APFS volumes that share a container (/ and /System/Volumes/Data) report the same
+    space, so they count as one.
+    """
+    groups, order = {}, []
+    for what, path in [('system', plat.system_root())] + list(watched):
+        vol = plat.volume_of(path)
+        if not vol:
+            continue
+        try:
+            du = plat.disk_usage(vol)
+        except OSError:
+            continue
+        key = os.path.normcase(vol) if plat.WINDOWS else (du.total, du.free)
+        if key not in groups:
+            groups[key] = {'volume': vol, 'free_gb': gb(du.free), 'total_gb': gb(du.total), 'holds': []}
+            order.append(key)
+        if what not in groups[key]['holds']:
+            groups[key]['holds'].append(what)
+    return [groups[k] for k in order]
+
+
 def du_bytes(path):
-    """Size on disk via du (fast, follows the real block count)."""
-    rc, out, _ = run(['du', '-sk', str(path)], timeout=600)
-    return int(out.split()[0]) * 1024 if rc == 0 and out else 0
+    """Size on disk (du on macOS and Linux; a walk that never follows a junction on Windows)."""
+    return plat.dir_size(path)
 
 
 def now():

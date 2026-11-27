@@ -1,6 +1,7 @@
 """reclaim CLI. Prints JSON. Read-only unless the subcommand name says it removes something.
 
-  df                                  free space on /
+  df                                  free space on / (Windows: the home drive), and on every drive that
+                                      holds a repo, a repo folder, the backups or Docker's disk
   scan [--days N] [--no-merged]       worktrees with a verdict each (writes last-scan.json)
   remove PATH...                      remove worktrees the last scan approved (re-checks each)
   backup PATH                         back up one worktree's uncommitted work
@@ -8,6 +9,13 @@
   docker restart-hung                 kill a Docker Desktop hung after a full disk, relaunch it
   docker prune [--days N]             unused images + build cache older than N days
   docker rm NAME...                   remove stale containers (never volumes), then their images
+  docker disk                         Docker's disk image on the host: its size against what Docker holds
+  docker compact [--release] [--shutdown-wsl] [--dry-run]
+                                      Windows: shrink Docker's VHDX (Docker quit; one UAC prompt)
+  buildirs scan                       build folders (node_modules, target, ...) in kept, idle worktrees
+  buildirs remove PATH...             remove those the last buildirs scan offered (re-checks each)
+  caches scan [--days N]              developer caches (npm, pip, Gradle, ...): size and how each clears
+  caches clear ID... [--days N]       clear those caches (skipped while their tool runs)
   config show | set KEY VALUE | detect | detect-roots | preview
 """
 import argparse
@@ -19,9 +27,13 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import backup as backup_mod  # noqa: E402
+import buildirs  # noqa: E402
+import caches  # noqa: E402
 import docker  # noqa: E402
+import plat  # noqa: E402
+import vdisk  # noqa: E402
 import worktrees  # noqa: E402
-from common import VALIDATORS, emit, free_bytes, gb, git, load_config, save_config  # noqa: E402
+from common import VALIDATORS, drives, emit, free_bytes, gb, git, load_config, save_config, watched_paths  # noqa: E402
 
 
 def detect_repos(limit=300):
@@ -30,7 +42,7 @@ def detect_repos(limit=300):
     files = sorted(projects.glob('*/*.jsonl'), key=lambda p: p.stat().st_mtime, reverse=True)[:limit]
     cwds = set()
     for f in files:
-        with open(f, errors='replace') as fh:
+        with open(f, encoding='utf-8', errors='replace') as fh:
             for _, line in zip(range(40), fh):
                 if '"cwd"' in line:
                     try:
@@ -52,6 +64,7 @@ def detect_repos(limit=300):
         # A bare repo's git dir is the repo itself; otherwise the main checkout is the git dir's parent.
         main = common_dir if (rc == 0 and bare.strip() == 'true') or not common_dir.endswith('/.git') \
             else os.path.dirname(common_dir)
+        main = plat.native(main)  # git prints C:/x on Windows
         if main not in repos:
             repos[main] = len(worktrees.list_worktrees(main))
     return [{'repo': r, 'worktrees': n} for r, n in sorted(repos.items(), key=lambda x: -x[1])]
@@ -61,7 +74,7 @@ def detect_roots(repos):
     """Folders that hold the detected repos, most repos first: the candidates for 'scan whole folders'."""
     counts = {}
     for r in repos:
-        parent = os.path.dirname(r['repo'].rstrip('/'))
+        parent = os.path.dirname(plat.strip_sep(r['repo']))
         counts[parent] = counts.get(parent, 0) + 1
     return [{'root': p, 'repos': n} for p, n in sorted(counts.items(), key=lambda x: (-x[1], x[0]))]
 
@@ -83,6 +96,11 @@ def resolve_repos(repos, roots):
     return out, warns
 
 
+def system_root():
+    """'/' on macOS and Linux, as before; on Windows the drive that holds the home folder."""
+    return plat.system_root()
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog='reclaim')
     sub = ap.add_subparsers(dest='cmd', required=True)
@@ -96,11 +114,25 @@ def main(argv=None):
     b = sub.add_parser('backup')
     b.add_argument('path')
     d = sub.add_parser('docker')
-    d.add_argument('action', choices=['status', 'restart-hung', 'prune', 'rm'])
+    d.add_argument('action', choices=['status', 'restart-hung', 'prune', 'rm', 'disk', 'compact'])
     d.add_argument('names', nargs='*')
     d.add_argument('--days', type=float)
+    d.add_argument('--first-live-run', action='store_true',
+                   help='Windows: run a step that has not run live on Windows yet, once, with its owner watching')
+    d.add_argument('--release', action='store_true',
+                   help="compact: stop Docker's own WSL distro first (wsl --terminate), after the user said yes")
+    d.add_argument('--shutdown-wsl', action='store_true',
+                   help='compact: run wsl --shutdown (stops every distro) if the disk is still held, after a yes')
+    d.add_argument('--dry-run', action='store_true', help='compact: check everything, change nothing')
     d.add_argument('--prune-images', action='store_true',
                    help='with rm: also prune old unused images afterwards (only after the user approved it)')
+    bd = sub.add_parser('buildirs')
+    bd.add_argument('action', choices=['scan', 'remove'])
+    bd.add_argument('paths', nargs='*')
+    k = sub.add_parser('caches')
+    k.add_argument('action', choices=['scan', 'clear'])
+    k.add_argument('ids', nargs='*')
+    k.add_argument('--days', type=float)
     c = sub.add_parser('config')
     c.add_argument('action', choices=['show', 'set', 'detect', 'detect-roots', 'preview'])
     c.add_argument('key', nargs='?')
@@ -111,7 +143,8 @@ def main(argv=None):
     days = cfg['days'] if given is None else given  # --days 0 is a real value
 
     if a.cmd == 'df':
-        emit({'free_gb': gb(free_bytes('/'))})
+        emit({'free_gb': gb(free_bytes(system_root())),
+              'drives': drives(watched_paths(cfg, [p for p, _ in vdisk.disk_paths()]))})
     elif a.cmd == 'scan':
         repos, warns = resolve_repos(a.repo or cfg['repos'], [] if a.repo else cfg['roots'])
         if not repos:
@@ -127,14 +160,36 @@ def main(argv=None):
         if a.action == 'status':
             emit(docker.status(days, keep))
         elif a.action == 'restart-hung':
-            emit(docker.restart_hung())
+            emit(docker.restart_hung(first_live_run=a.first_live_run))
         elif a.action == 'prune':
             emit(docker.prune(days))
+        elif a.action == 'disk':
+            emit(vdisk.report())
+        elif a.action == 'compact':
+            emit(vdisk.compact(first_live_run=a.first_live_run, release=a.release, shutdown_wsl=a.shutdown_wsl,
+                               dry_run=a.dry_run))
         elif a.action == 'rm':
             if not a.names:
                 emit({'error': 'name the containers to remove'})
                 return 2
             emit(docker.remove_containers(a.names, days, keep, prune_after=a.prune_images))
+    elif a.cmd == 'buildirs':
+        if a.action == 'scan':
+            emit(buildirs.scan(cfg, days))
+        else:
+            if not a.paths:
+                emit({'error': 'name the build folders to remove (their paths from buildirs scan)'})
+                return 2
+            emit(buildirs.remove(cfg, a.paths))
+    elif a.cmd == 'caches':
+        cdays = a.days  # caches have their own age (cache_days); --days here overrides that
+        if a.action == 'scan':
+            emit(caches.scan(cfg, cdays))
+        else:
+            if not a.ids:
+                emit({'error': 'name the caches to clear (their ids from caches scan)'})
+                return 2
+            emit(caches.clear(cfg, a.ids, cdays))
     elif a.cmd == 'config':
         if a.action == 'show':
             emit(cfg)

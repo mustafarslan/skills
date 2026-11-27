@@ -7,11 +7,12 @@ import time
 import unittest
 from pathlib import Path
 
-from test_reclaim import HERE, Base, age_tree, sh  # noqa: F401
+from test_reclaim import HERE, POSIX_ONLY, WINDOWS, Base, age_tree, can_symlink, remove_tool, sh  # noqa: F401
 
 import backup as backup_mod  # noqa: E402
 import common  # noqa: E402
 import docker  # noqa: E402
+import plat  # noqa: E402
 import reclaim as cli  # noqa: E402
 import worktrees  # noqa: E402
 
@@ -64,7 +65,7 @@ class TestWorktreeSafety(Base):
         a = self.worktree('goner')
         b = self.worktree('unplugged')
         self.scan()
-        sh('mv', b, b + '.away')  # looks missing, like a worktree on an unplugged disk
+        os.rename(b, b + '.away')  # looks missing, like a worktree on an unplugged disk
         seen = []
         real = worktrees.git
 
@@ -76,7 +77,7 @@ class TestWorktreeSafety(Base):
         out = worktrees.remove([a], str(self.backups), backup_mod.backup)
         self.assertEqual(out['results'][0]['result'], 'removed')
         self.assertFalse(any(x[:2] == ('worktree', 'prune') for x in seen))
-        sh('mv', b + '.away', b)
+        os.rename(b + '.away', b)
         self.assertIn(b, [w for w, _ in worktrees.list_worktrees(str(self.repo))])
 
     def test_missing_parent_folder_is_kept_not_pruned(self):
@@ -93,15 +94,21 @@ class TestWorktreeSafety(Base):
 
     def test_missing_gh_degrades_and_says_so(self):
         p = self.worktree('nogh')
-        (self.bin / 'gh').unlink()
-        os.environ['PATH'] = f'{self.bin}:/usr/bin:/bin'
+        remove_tool(self.bin, 'gh')
+        os.environ['PATH'] = os.pathsep.join([str(self.bin), os.path.dirname(plat.which('git'))] if WINDOWS
+                                             else [str(self.bin), '/usr/bin', '/bin'])
         rows = worktrees.scan([str(self.repo)], 3, current=str(self.tmp), with_size=False)
         self.assertFalse(rows['prs_checked'])
         self.assertTrue(any('PRs were not checked' in w for w in rows['warnings']))
         row = {r['path']: r for r in rows['rows']}[p]
         self.assertEqual(row['verdict'], 'remove')
+        # The removal follows the scan's footing: no PR lookup it couldn't make at scan time either.
+        out = worktrees.remove([p], str(self.backups), backup_mod.backup)
+        self.assertEqual(out['results'][0]['result'], 'removed', out)
 
     def test_proc_reader_lists_cwds(self):
+        if not can_symlink(self.tmp):
+            self.skipTest('this account may not create symlinks')
         proc = self.tmp / 'proc' / '77'
         proc.mkdir(parents=True)
         (proc / 'comm').write_text('editor\n')
@@ -149,6 +156,7 @@ class TestDockerSafety(Base):
         docker.remove_containers(['done'], 3, [], prune_after=True)
         self.assertTrue(any(c[:2] == ['image', 'prune'] for c in self.calls()))
 
+    @POSIX_ONLY
     def test_old_disk_full_error_does_not_look_hung(self):
         log = self.tmp / 'backend.log'
         os.environ['RECLAIM_DOCKER_LOG'] = str(log)
@@ -156,6 +164,7 @@ class TestDockerSafety(Base):
         self.patch_pgrep()
         self.assertFalse(docker.hung_state()['hung'])
 
+    @POSIX_ONLY
     def test_restart_refuses_when_state_changes_during_the_grace_wait(self):
         log = self.tmp / 'backend.log'
         os.environ['RECLAIM_DOCKER_LOG'] = str(log)
@@ -179,7 +188,7 @@ class TestDockerSafety(Base):
         self.assertEqual(killed, [])
 
     def test_status_without_docker_installed(self):
-        (self.bin / 'docker').unlink()
+        remove_tool(self.bin, 'docker')
         os.environ['PATH'] = str(self.bin)
         out = docker.status(3, [])
         self.assertFalse(out['installed'])
@@ -229,6 +238,7 @@ class TestConfig(Base):
         self.assertFalse([n for n in names if n.endswith('.tmp')])
 
 
+@unittest.skipUnless(__import__('shutil').which('sh'), 'the hook runs through sh (Git Bash on Windows)')
 class TestHookDataFolder(Base):
     """The hook is given CLAUDE_PLUGIN_DATA; the CLI (run through Bash) is not. They must agree."""
 
@@ -240,7 +250,7 @@ class TestHookDataFolder(Base):
         self.plugin_data.mkdir(parents=True)
 
     def env(self, with_plugin_data):
-        env = dict(os.environ, HOME=str(self.fake_home))
+        env = dict(os.environ, HOME=str(self.fake_home), USERPROFILE=str(self.fake_home))  # Windows reads USERPROFILE
         env.pop('RECLAIM_HOME', None)
         env.pop('CLAUDE_PLUGIN_DATA', None)
         if with_plugin_data:
@@ -317,6 +327,8 @@ class TestRoots(Base):
         self.assertIn('missing', warns[0])
 
     def test_symlinked_root_gives_each_repo_once(self):
+        if not can_symlink(self.tmp):
+            self.skipTest('this account may not create symlinks')
         a = self.tmp / 'Projects'
         self.make_repo(a, 'one')
         (self.tmp / 'alias').symlink_to(a)

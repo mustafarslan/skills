@@ -1,6 +1,8 @@
 """reclaim tests: temporary git repos, fake gh/lsof/docker on PATH. No real worktree or container is touched."""
 import json
 import os
+import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -14,9 +16,13 @@ sys.path.insert(0, str(HERE / 'scripts'))
 
 import backup as backup_mod  # noqa: E402
 import docker  # noqa: E402
+import plat  # noqa: E402
 import worktrees  # noqa: E402
 
 OLD = time.time() - 10 * 86400  # ten days ago
+WINDOWS = plat.WINDOWS
+POSIX_ONLY = unittest.skipIf(WINDOWS, 'macOS and Linux behaviour (lsof, pgrep); Windows has its own test')
+WINDOWS_ONLY = unittest.skipUnless(WINDOWS, 'Windows behaviour')
 
 FAKE_GH = r'''#!/usr/bin/env python3
 import json, os, sys
@@ -45,6 +51,48 @@ elif a[:2] == ['image', 'prune']:
 '''
 
 
+def install_tool(bin_dir, name, body):
+    """A fake program on PATH. POSIX: an executable script. Windows: name.py plus a name.cmd that runs it with
+    this Python (Windows can't start a script without an extension)."""
+    if WINDOWS:
+        (bin_dir / f'{name}.py').write_text(body, encoding='utf-8')
+        (bin_dir / f'{name}.cmd').write_text(
+            f'@"{sys.executable}" "%~dp0{name}.py" %*\r\n@exit /b %errorlevel%\r\n')
+        return
+    f = bin_dir / name
+    f.write_text(body)
+    f.chmod(0o755)
+
+
+def remove_tool(bin_dir, name):
+    for f in ([bin_dir / f'{name}.py', bin_dir / f'{name}.cmd'] if WINDOWS else [bin_dir / name]):
+        f.unlink()
+
+
+def rmtree(path):
+    """rm -rf, which on Windows must clear the read-only bit git puts on its object files."""
+    if not WINDOWS:
+        subprocess.run(['rm', '-rf', str(path)])
+        return
+
+    def again(fn, p, _):
+        try:
+            os.chmod(p, stat.S_IWRITE)
+            fn(p)
+        except OSError:
+            pass
+    shutil.rmtree(str(path), onerror=again)
+
+
+def can_symlink(tmp):
+    try:
+        os.symlink(str(tmp), str(tmp / '.symlink-probe'))
+    except (OSError, NotImplementedError):
+        return False
+    os.unlink(str(tmp / '.symlink-probe'))
+    return True
+
+
 def sh(*cmd, cwd=None, env=None):
     e = dict(os.environ, **(env or {}))
     return subprocess.run(cmd, cwd=cwd, env=e, check=True, capture_output=True, text=True).stdout.strip()
@@ -53,7 +101,10 @@ def sh(*cmd, cwd=None, env=None):
 def age_tree(path, when=OLD):
     for root, dirs, files in os.walk(path):
         for name in files + dirs:
-            os.utime(os.path.join(root, name), (when, when), follow_symlinks=False)
+            if os.utime in os.supports_follow_symlinks:
+                os.utime(os.path.join(root, name), (when, when), follow_symlinks=False)
+            else:  # Windows
+                os.utime(os.path.join(root, name), (when, when))
 
 
 class Base(unittest.TestCase):
@@ -62,19 +113,22 @@ class Base(unittest.TestCase):
         self.bin = self.tmp / 'bin'
         self.bin.mkdir()
         for name, body in (('gh', FAKE_GH), ('lsof', FAKE_LSOF), ('docker', FAKE_DOCKER)):
-            f = self.bin / name
-            f.write_text(body)
-            f.chmod(0o755)
+            if not (WINDOWS and name == 'lsof'):  # Windows checks folders itself; there is no lsof
+                install_tool(self.bin, name, body)
         self.gh = self.tmp / 'gh.json'
         self.gh.write_text('{}')
         self.env_before = dict(os.environ)
         os.environ.update(
-            PATH=f'{self.bin}:{os.environ["PATH"]}', FAKE_GH=str(self.gh),
+            PATH=f'{self.bin}{os.pathsep}{os.environ["PATH"]}', FAKE_GH=str(self.gh),
             FAKE_LSOF=str(self.tmp / 'lsof.txt'), RECLAIM_HOME=str(self.tmp / 'data'),
             FAKE_DOCKER_LOG=str(self.tmp / 'docker.log'),
             FAKE_DOCKER_PS=str(self.tmp / 'ps.txt'),
             GIT_AUTHOR_NAME='t', GIT_AUTHOR_EMAIL='t@t', GIT_COMMITTER_NAME='t', GIT_COMMITTER_EMAIL='t@t',
         )
+        if WINDOWS:  # never find the real Docker Desktop or the real caches of this PC
+            for var in ('LOCALAPPDATA', 'APPDATA', 'ProgramFiles'):
+                (self.tmp / var).mkdir()
+                os.environ[var] = str(self.tmp / var)
         self.remote = self.tmp / 'remote.git'
         sh('git', 'init', '-q', '--bare', '-b', 'main', str(self.remote))
         self.repo = self.tmp / 'repo'
@@ -88,7 +142,14 @@ class Base(unittest.TestCase):
     def tearDown(self):
         os.environ.clear()
         os.environ.update(self.env_before)
-        subprocess.run(['rm', '-rf', str(self.tmp)])
+        rmtree(self.tmp)
+
+    def tool(self, name, sh_body, py_body):
+        """Replace a fake: the shell body on POSIX, the Python body on Windows."""
+        if WINDOWS:
+            install_tool(self.bin, name, py_body)
+        else:
+            install_tool(self.bin, name, sh_body)
 
     def commit(self, path, msg, when=OLD):
         stamp = f'@{int(when)} +0000'
@@ -189,6 +250,7 @@ class TestVerdicts(Base):
         self.assertEqual(row['verdict'], 'keep')
         self.assertIn('edited since the cutoff', row['reasons'])
 
+    @POSIX_ONLY
     def test_failed_lsof_keeps_everything(self):
         p = self.worktree('no-lsof')
         os.environ['FAKE_LSOF_RC'] = '127'
@@ -261,11 +323,13 @@ class TestVerdicts(Base):
 
     def test_failed_pr_lookup_keeps_the_tree(self):
         p = self.worktree('gh-down')
-        (self.bin / 'gh').write_text('#!/bin/sh\n[ "$1" = auth ] && exit 0\nexit 1\n')  # logged in, lookups fail
+        self.tool('gh', '#!/bin/sh\n[ "$1" = auth ] && exit 0\nexit 1\n',  # logged in, lookups fail
+                  "import sys\nsys.exit(0 if sys.argv[1:2] == ['auth'] else 1)\n")
         row = self.scan()[p]
         self.assertEqual(row['verdict'], 'keep')
         self.assertIn('PR lookup failed', row['reasons'])
 
+    @POSIX_ONLY
     def test_process_inside_keeps_the_tree(self):
         p = self.worktree('busy')
         (self.tmp / 'lsof.txt').write_text(f'p123\ncvim\nn{os.path.realpath(p)}/sub\n')
@@ -414,6 +478,7 @@ class TestDocker(Base):
             {'Names': 'paused-svc', 'Image': 'x', 'State': 'paused', 'Status': 'Paused', 'ID': 'p'}) + '\n')
         self.assertEqual(docker.stale_containers(3, []), [])
 
+    @POSIX_ONLY
     def test_hung_needs_process_stopping_state_and_full_disk(self):
         log = self.tmp / 'backend.log'
         os.environ['RECLAIM_DOCKER_LOG'] = str(log)
@@ -426,6 +491,7 @@ class TestDocker(Base):
         self.assertFalse(docker.hung_state()['hung'])
 
 
+@unittest.skipUnless(shutil.which('sh'), 'the hook runs through sh (Git Bash on Windows)')
 class TestHook(Base):
     def run_hook(self):
         return subprocess.run(['sh', str(HERE / 'scripts' / 'low-disk.sh')], capture_output=True, text=True)

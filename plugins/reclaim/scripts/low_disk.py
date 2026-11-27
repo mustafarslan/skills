@@ -1,4 +1,5 @@
-"""SessionStart hook. Prints hook JSON when free space on / is below warn_gb, at most once an hour.
+"""SessionStart hook. Prints hook JSON when free space is below warn_gb on a drive that matters (the
+system's, or one holding a repo, a repo folder, the backups or Docker's disk), at most once an hour.
 
 systemMessage is shown to the user; additionalContext lets Claude offer /reclaim. Silent when there is
 no config, the hook is off, space is fine, or it already warned within the hour. Never raises.
@@ -11,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from common import fallback_home, free_bytes, gb, home, load_config, remember_data_dir, write_atomic  # noqa: E402
+from common import drives, fallback_home, home, load_config, remember_data_dir, watched_paths, write_atomic  # noqa: E402
 
 
 def main():
@@ -28,8 +29,13 @@ def main():
     if not cfg['configured'] or cfg['hook'] is False:
         return
     warn = cfg['warn_gb']
-    free = gb(free_bytes('/'))
-    if free >= warn:
+    try:
+        import vdisk  # file checks only: where Docker's disk image is
+        disks = [p for p, _ in vdisk.disk_paths()]
+    except Exception:
+        disks = []
+    low = [d for d in drives(watched_paths(cfg, disks)) if d['free_gb'] < warn]
+    if not low:
         return
     stamp = data / 'last-warning'
     try:
@@ -42,8 +48,9 @@ def main():
         write_atomic(stamp, str(int(time.time())) + '\n')
     except OSError:
         pass
-    msg = (f'reclaim: only {free:g} GB free on this machine (your warning level is {warn:g} GB). '
-           'Run /reclaim to clear old worktrees and Docker data.')
+    where = '; '.join(f"only {d['free_gb']:g} GB free on {d['volume']} ({', '.join(d['holds'])})" for d in low)
+    msg = (f'reclaim: {where} (your warning level is {warn:g} GB). '
+           'Run /reclaim to clear old worktrees, build folders, caches and Docker data.')
     print(json.dumps({'systemMessage': msg,
                       'hookSpecificOutput': {'hookEventName': 'SessionStart', 'additionalContext': msg}}))
 

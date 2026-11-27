@@ -1,6 +1,6 @@
 # reclaim: design and rebuild guide
 
-reclaim is a Claude Code plugin that frees disk space on a Mac. It removes git worktrees you no longer need,
+reclaim is a Claude Code plugin that frees disk space on a Mac or a Windows PC. It removes git worktrees you no longer need,
 gets Docker Desktop running again after it hung on a full disk, and prunes old Docker data. It never deletes
 work that isn't backed up.
 
@@ -57,16 +57,21 @@ reclaim/                                  # a local marketplace you can add dire
     ├── skills/init/SKILL.md              # /reclaim:init: writes config.json
     ├── scripts/reclaim                   # sh launcher: exec python3 reclaim.py "$@"
     ├── scripts/reclaim.py                # CLI (argparse), JSON out
+    ├── scripts/plat.py                   # every macOS / Windows difference, in one place
     ├── scripts/common.py                 # run(), git(), config, free space, data folder
     ├── scripts/worktrees.py              # facts, verdicts, scan, remove
     ├── scripts/backup.py                 # patch + archives, verified
     ├── scripts/docker.py                 # status, hung detection, restart, prune, rm
+    ├── scripts/buildirs.py               # build folders in kept, idle worktrees
+    ├── scripts/caches.py                 # developer caches
+    ├── scripts/vdisk.py, compact.ps1     # Docker's disk file; the one admin step (Windows)
     ├── scripts/low-disk.sh               # the hook
-    └── tests/run.test.sh, test_reclaim.py
+    └── tests/run.test.sh, test_*.py
 ```
 
-It needs only the standard library: Python 3.9 or newer, `git`, `gh` (logged in), `lsof`, `tar`, `du`,
-and `jq` for the hook. The Docker part needs Docker Desktop on macOS.
+It needs only the standard library: Python 3.9 or newer, `git` and `gh` (logged in). On macOS it also uses
+`lsof`, `tar` and `du`; on Windows it uses none of Git Bash's Unix tools (see 9b). The Docker part needs
+Docker Desktop.
 
 ## 4. The CLI
 
@@ -74,7 +79,7 @@ All output is JSON. A subcommand changes nothing unless its name says it removes
 
 | Command | Does |
 |---|---|
-| `reclaim df` | Free GB on `/` |
+| `reclaim df` | Free GB on `/` (Windows: the home drive), plus `drives`: every drive that matters |
 | `reclaim scan [--days N] [--no-merged] [--repo PATH]...` | One row per worktree of each configured repo, with a verdict. Writes `last-scan.json` |
 | `reclaim remove PATH...` | Removes worktrees the last scan approved, re-checking each one |
 | `reclaim backup PATH` | Backs up one worktree's uncommitted work |
@@ -82,6 +87,10 @@ All output is JSON. A subcommand changes nothing unless its name says it removes
 | `reclaim docker restart-hung` | Only when hung: kills the stuck processes, `open -a Docker`, waits up to 3 min |
 | `reclaim docker prune [--days N]` | `image prune -a` and `builder prune -a`, both with `--filter until=<N*24>h` |
 | `reclaim docker rm NAME...` | Removes named containers that are still stale now (no `-v`), then prunes images |
+| `reclaim docker disk` | Docker's disk image: size and real size against what Docker holds |
+| `reclaim docker compact [--release] [--shutdown-wsl] [--dry-run]` | Windows: shrinks Docker's VHDX (9c) |
+| `reclaim buildirs scan` / `remove PATH...` | Build folders in kept, idle worktrees (8b) |
+| `reclaim caches scan` / `clear ID...` `[--days N]` | Developer caches (9d) |
 | `reclaim config show \| set KEY VALUE \| detect` | Read, write, or find repos from recent Claude sessions |
 
 ## 5. Configuration
@@ -103,6 +112,14 @@ still honoured by the hook. `tests/test_safety.py` pins this with the variable s
 | `keep_containers` | `[]` | Container names or globs never offered for removal (`k3d-*`) |
 | `warn_gb` | `15` | The hook warns below this |
 | `hook` | `true` | `false` silences the warning |
+| `roots` | `[]` | Folders of repos, scanned two levels deep (0.3.0) |
+| `cache_days` | `30` | A by-age cache entry untouched this long goes |
+| `cache_dirs` | `[]` | Your own cache folders, cleared by age |
+| `buildirs_in_main` | `false` | Also offer build folders in main checkouts |
+| `build_dir_names` | `[]` | More build folder names (plain names, no `/`) |
+
+The backup default is `~/Desktop/worktree-backups` on macOS and `~/reclaim-backups` elsewhere
+(`%USERPROFILE%\reclaim-backups` on Windows). On Windows, write paths in `config set` with forward slashes.
 
 `config detect` reads the first `cwd` of up to 300 recent session transcripts in `~/.claude/projects/*/`.
 It maps each one to its repo's main checkout (the parent of `git rev-parse --git-common-dir`), then
@@ -124,7 +141,7 @@ gathers:
 | Commits on no remote | `rev-list --count HEAD --not --remotes` | keep |
 | Detached and unreachable | `for-each-ref --contains HEAD` over heads, remotes and tags is empty | keep |
 | Nested checkouts | any `.git` below the root, including just inside build folders | |
-| In use | one machine-wide `lsof -a -d cwd -Fpcn`; any process cwd at or under the tree | keep |
+| In use | one machine-wide `lsof -a -d cwd -Fpcn`; any process cwd at or under the tree (Windows: 9b) | keep |
 | PRs | `gh pr list --head <branch> --state all`; a detached `...-<n>` folder uses `gh pr view n` | keep |
 | Merged and safe | a MERGED PR whose `headRefOid` has local HEAD as an ancestor | |
 
@@ -208,6 +225,21 @@ Build folders (`BUILD_DIRS`) are never backed up and never count as activity: `n
 `venv`, `.next`, `.turbo`, `__pycache__`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `dist`, `build`,
 `coverage`, `target` and `.cache`. Checkouts just inside them are still detected, to depth 3.
 
+## 8b. Build folders in kept worktrees (0.4.0, `scripts/buildirs.py`)
+
+`buildirs scan` reads the last worktree scan (an hour at most) and looks inside each tree whose verdict is
+`keep` and that is idle: `old` is true, no uncommitted file was edited since the cutoff, and no keep reason
+says it is used (in use, this session, a paused session, the process check failed, edited, newer than the
+cutoff). Main checkouts count only with `buildirs_in_main: true`. In those trees, up to four levels down and
+never inside another checkout, a link or junction, it offers folders named `node_modules`, `target`, `.venv`,
+`build`, `dist`, `.gradle`, `Intermediate`, `Binaries`, `DerivedDataCache` or a `build_dir_names` entry, when
+`git ls-files -- <dir>` is empty, `git check-ignore -q -- <dir>/` succeeds, no checkout sits inside, and no
+process is in it. It writes `last-buildirs.json`.
+
+`buildirs remove PATH...` takes only folders that scan offered, within the hour. For each it inspects the tree
+again (idle, not in use), runs every folder check again, checks for files other programs hold open (Windows),
+and deletes through the shared delete routine.
+
 ## 9. Docker
 
 - **Down and hung** needs all three facts:
@@ -218,15 +250,124 @@ Build folders (`BUILD_DIRS`) are never backed up and never count as activity: `n
 
   Only then is `restart-hung` allowed. It `kill -9`s those pids (never `vmnetd`, which runs as root),
   runs `open -a Docker`, and polls `docker info` for 3 minutes. If Docker is down for any other reason,
-  the user is told to start it from the menu bar.
+  the user is told to start it from the menu bar. Windows: 9b.
 - **Prune** uses age filters only, so nothing newer than N days goes.
 - **Stale containers** are those in state `exited`, `dead` or `created` whose `FinishedAt` (else
   `Created`) is at least N days old, plus `restarting` ones (crash loops). Running and paused containers
   are never stale, and the keep-list filters by `fnmatch`.
-- **`docker rm`** re-checks staleness at call time, uses `rm -f` **without `-v`**, and then prunes images
-  only, never build cache.
+- **`docker rm`** re-checks staleness at call time and uses plain `docker rm` **without `-v`**, so a
+  container started again since the check is refused by Docker, not killed; `-f` only for one stuck
+  restarting. It then prunes images only when the user said yes to that, never build cache.
 - **Volumes are never touched**: no `-v`, no `volume prune`, no `system prune --volumes`. Volumes hold
   databases. If you ask, the skill shows their sizes and leaves the removal to you.
+
+## 9b. Windows
+
+Every difference lives in `scripts/plat.py`. On macOS and Linux each of its functions computes what 0.3
+computed in place (the same `du -sk`, `tar --null -T`, `lsof` and `/`-string tests); Windows gets its own
+branch, built on the Win32 API through `ctypes`. No admin, nothing to install, and no Git Bash Unix tool.
+
+- **In use.** Windows has no `lsof` and no `/proc`. The deciding check opens each folder of the tree with no
+  sharing at all (`CreateFileW`, share mode 0, `FILE_FLAG_BACKUP_SEMANTICS`) and closes it again. A process
+  whose current folder is that folder holds it open, so the open fails with a sharing violation; this works
+  for every user's processes, elevated ones too. Only the exact folder counts (a process in `a/b` holds
+  `a/b`, not `a`), so every real folder is checked, never through a junction. The test proves it with a
+  real child process in a subfolder. A second, read-only pass reads each of this user's processes' current
+  folders from their own memory (`NtQueryInformationProcess` and `ReadProcessMemory`) only to *name* who is
+  there. If the probe can't run, every tree is kept.
+- **Paths.** git prints `C:/x`; reclaim compares with `normcase` and `commonpath`, reports relative paths
+  with `/`, and reads and deletes past 260 characters through the `\\?\` form. git runs with
+  `core.longpaths=true`. Programs are found on absolute `PATH` entries only, never in the current folder
+  (Windows searches that first, so a planted `git.exe` would run). Arguments to a `.cmd` (npm, pnpm, yarn)
+  are quoted so `|` and `&` reach it as text; one cmd.exe can't take (`%`, a quote) is refused.
+- **Junctions** (pnpm, `node_modules` links) are never entered: walks skip them, sizes don't count what they
+  point to, backups store them as links, and a delete removes the link only. `git worktree remove` leaves a
+  junction (and the folders above it) behind, so reclaim removes what is left the same way afterwards.
+- **Locked files.** Windows can't delete a file another program has open, so before `git worktree remove`
+  every file is opened the same no-sharing way. One that fails keeps the whole tree, reported as
+  "locked by <program>" (named by the Restart Manager, read-only). If a lock still hits partway, the result
+  says how many files are left and where; the commits are in git and the uncommitted work in the backup.
+  Nothing is "put back" into the folder: a backup holds the uncommitted files only.
+- **Backups** use Python's `tarfile` (Git Bash's tar can't take `C:\` paths) with the same read-back count
+  check. INFO.txt gives Windows restore steps, with the `tar.exe` Windows ships.
+- **Docker** is found on `PATH` or in its install folder (`%ProgramFiles%\Docker\Docker`, or per user
+  `%LOCALAPPDATA%\Programs\DockerDesktop`): a session started before the install doesn't have it on `PATH`.
+  Its processes (`Docker Desktop.exe`, `com.docker.backend.exe`, `com.docker.build.exe`) are matched by path
+  inside that folder; `com.docker.service` (SYSTEM) is never touched. The WSL state comes from `wsl -l -v`
+  (UTF-16, read by position because the header is localised), the log from
+  `%LOCALAPPDATA%\Docker\log\host\com.docker.backend*.log`.
+- **Launchers.** `scripts/reclaim` and the hook take the first of `python3`, `python` and `py -3` that runs
+  Python 3.9+: on some PCs `python3` is the Microsoft Store's stub. The hook is still run by `sh` (Claude Code
+  on Windows has Git Bash; power-saver's `sh` SessionStart hook was seen firing on Windows).
+
+### Windows: first live runs
+
+The revive (`docker restart-hung`) and the disk compact (`docker compact`, 0.4.0) were written without a
+Windows Docker Desktop that had ever started, so the log lines and the disk paths are the Mac's or the
+documented ones. Until each step has run live once on a Windows PC, reclaim only reports there:
+`LIVE_ON_WINDOWS` in `docker.py` is False, `down.hung` stays False (`down.hung_suspected` carries the three
+facts), and the step refuses unless it is given `--first-live-run`. The skill never passes that flag. The
+owner runs each step once by hand, watching, and then sets its entry to True in a commit that records what
+the log said. The steps:
+
+1. **Revive.** Only when Docker Desktop really hangs after a full disk (do not fill a disk to make it).
+   Read `reclaim docker status`: `down.hung_suspected` should be true. Open the newest
+   `%LOCALAPPDATA%\Docker\log\host\com.docker.backend*.log` and check that its last lines say
+   `backend state changed to stopping` and `no space left on device`; if they use other words, change the
+   patterns in `_hung_state_windows` first. Then `reclaim docker restart-hung --first-live-run`, and watch
+   Docker Desktop come back. If it worked, set `LIVE_ON_WINDOWS['revive'] = True`.
+2. **Compact.** After Docker Desktop's first start, `reclaim docker disk` should list `docker_data.vhdx`
+   (or `ext4.vhdx`). Quit Docker Desktop, then `reclaim docker compact --first-live-run --dry-run`, then
+   without `--dry-run` (adding `--release` and, if asked, `--shutdown-wsl`), say yes to the one UAC prompt,
+   and check that `freed` is plausible and Docker Desktop starts and still has its images and volumes.
+   If it worked, set `LIVE_ON_WINDOWS['compact'] = True`.
+
+**The in-use probe's one side effect.** Each folder is held with no sharing for the microseconds between
+open and close. Listing it, reading it and creating files in it work meanwhile (tested); only a process that
+changes into that very folder at that instant is refused, as if the folder were busy.
+
+## 9c. Docker's disk file (0.4.0, `scripts/vdisk.py`, `scripts/compact.ps1`)
+
+`docker disk` lists Docker's disk images with their size and their real size on disk (`st_blocks` on
+macOS, `GetCompressedFileSizeW` on Windows), next to the sum of `docker system df`'s sizes when Docker is up.
+
+- **macOS**: `Docker.raw` (from `settings-store.json`'s `DataFolder`, else the default) is sparse on APFS, so
+  there is nothing to compact; the report says so.
+- **Windows**: `docker_data.vhdx`, or `ext4.vhdx` in older versions, under `%LOCALAPPDATA%\Docker\wsl\` or
+  the `CustomWslDistroDir` of Docker's settings. `docker compact` refuses unless every one of these holds,
+  in this order, and changes nothing until they do:
+  1. the step has run live once (`LIVE_ON_WINDOWS['compact']`), or `--first-live-run`;
+  2. no Docker Desktop process (by path) and no `docker`, `docker-compose` or `docker-buildx` command runs:
+     not while Docker is starting or a build runs;
+  3. Docker's own WSL distros are stopped, or `--release` (the user said yes) stops them with
+     `wsl --terminate`;
+  4. the VHDX opens with no sharing (nothing holds it), or `--shutdown-wsl` (a second yes, after the user
+     was told which other distros run) runs `wsl --shutdown`, and then it must open;
+  5. one elevated PowerShell runs `compact.ps1`: `Optimize-VHD -Mode Full` if the Hyper-V tools are there,
+     else `diskpart` (`attach vdisk readonly`, `compact vdisk`, and `detach vdisk` in a `finally`). It writes
+     a JSON result to a file that reclaim reads back; no file is a failure, never a success (power-saver
+     0.1.0 lost its elevated reply because it read stdout).
+- **Sparse mode is left out.** WSL 3.0.5 lists `wsl --manage <distro> --set-sparse true` (no `--allow-unsafe`
+  in its help), but it targets a distro's own disk, and Docker's data disk is a separate VHDX. It has not been
+  tried on one, so reclaim doesn't offer it.
+
+## 9d. Developer caches (0.4.0, `scripts/caches.py`)
+
+`caches scan` lists each known cache that exists here: its folders, its size, how it clears and, when a
+process of its tool runs, `busy`. `caches clear ID...` re-reads the process table and skips a busy cache.
+
+- **Where**: each tool's own default for the system (`%LOCALAPPDATA%` on Windows, `~/Library/Caches` on macOS,
+  `~/.cache` elsewhere), or its variable (`GOCACHE`, `CARGO_HOME`, `GRADLE_USER_HOME`, `UV_CACHE_DIR`,
+  `NUGET_PACKAGES`). A missing folder is skipped silently.
+- **All**: the tool's own command when it is installed, else the folder's contents through the shared delete
+  routine (links removed as links, the folder itself kept).
+- **By age**: the tool's own prune (pnpm, uv), else whole entries whose newest file and folder time is older
+  than `cache_days`: a Maven version folder (it holds a `.pom`), a Gradle `files-2.1/group/module/version`,
+  a build-cache file, or a child of a folder in `cache_dirs`.
+- **Busy**: a process whose program, or one of the first four words of its command line (so `node npm-cli.js`
+  counts as npm and `node server.js` doesn't), is the tool's; for Gradle and Maven, the daemon's class name
+  anywhere in the command line.
+- Left out: `%TEMP%`, which is noisy and often locked.
 
 ## 10. Extension point: paused sessions
 
@@ -253,6 +394,16 @@ Otherwise it prints hook JSON: `systemMessage`, which the user sees, and
 One jq pitfall: `.hook // true` returns `true` for `false`, because `//` treats `false` as missing. Use
 `if .hook == false then "off" else "on" end`.
 
+### Per drive (0.4.0)
+
+`df` keeps `free_gb` (for `/`, or the home drive on Windows) and adds `drives`: one row per drive or volume
+that holds the system, a repo, a repo folder, the backup folder or Docker's disk image, with its free and
+total space and what it holds. A path is placed by its nearest existing folder (a backup folder not made yet
+counts where it will be), and a drive that isn't there is left out. Windows groups by volume
+(`GetVolumePathNameW`); macOS by the space a volume reports, so `/` and the Data volume of one APFS container
+are one row and an external SSD is another. The hook warns for each row below `warn_gb`, naming the drive and
+what it holds. It only reads the config and checks files: no git, no Docker command.
+
 ## 12. The skills
 
 **`/reclaim`** (flags `--days N`, `--dry-run`, `--no-merged`, `--worktrees-only`, `--docker-only`):
@@ -276,7 +427,14 @@ One jq pitfall: `.hook // true` returns `true` for `false`, because `//` treats 
 **`/reclaim:init`** asks for the repos (from `config detect`), the age, the backup folder, the containers to
 keep, and the warning level, then reads the config back.
 
-## 13. Tests (37, about 12 s)
+## 13. Tests (130 on Windows, about 3 minutes; the Windows-only ones skip on macOS)
+
+0.4.0 adds `test_platform.py` (the platform layer and the Windows port: the in-use probe with a real child
+process in a subfolder, a file held open during a removal, junctions inside a tree, a backup and a cache,
+paths past 260 characters, the `.cmd` quoting, `wsl -l -v` from captured fixtures, the revive gate),
+`test_vdisk.py`, `test_caches.py`, `test_buildirs.py` and `test_drives.py`. Fakes on Windows are a `.cmd`
+next to a `.py`; HOME, USERPROFILE, LOCALAPPDATA, APPDATA and ProgramFiles point into the test's folder, so no
+real Docker or cache is seen. The POSIX-only cases (`lsof`, `pgrep`) skip on Windows and have Windows twins.
 
 `tests/test_reclaim.py` builds throwaway git repos with a bare remote. `gh`, `lsof` and `docker` are fakes
 on `PATH`, driven by environment variables. Commit and reflog times are set through
@@ -337,6 +495,16 @@ To rebuild from scratch, work in this order, testing each step before the next:
 4. `docker.py` (§9).
 5. The CLI, the skills, the hook and the README.
 
+## 14a. Changes in 0.4.0
+
+- **Windows** (9b): the whole plugin, through `plat.py`. macOS keeps its `du`, `tar` and `lsof` calls.
+- **Docker's disk file** (9c), **developer caches** (9d), **build folders in kept worktrees** (8b) and
+  **free space per drive** (11), on both systems where they make sense.
+- `remove` looks PRs up again only when the scan could (a scan without `gh` no longer leads to every removal
+  being skipped as "PR lookup failed").
+- `docker rm` is documented as it is: plain `rm`, `-f` only for a container stuck restarting.
+- Report-only on Windows until run live once: the Docker revive and the compact.
+
 ## 14b. Changes in 0.2.0
 
 Found by an adversarial review and checked against the code before each fix. Each has a test in
@@ -377,8 +545,8 @@ choosing the disk to check from the repos' volume (it checks `/`).
 
 ## 15. Known limits
 
-- It is macOS only: the Docker paths and `open -a`. The worktree half works on Linux, but it is untested
-  there.
+- macOS and Windows. The worktree half also works on Linux, but it is untested there. On Windows the Docker
+  revive and compact only report until they have run live once (9b).
 - It is a heuristic: a worktree you are reading but not editing, with no process open inside it, counts
   as idle.
 - A scan calls `gh` once per worktree, six at a time. Thousands of worktrees would run into GitHub's rate
@@ -386,4 +554,4 @@ choosing the disk to check from the repos' volume (it checks `/`).
 - Removing a worktree removes the folder only. Branches stay, so delete merged branches separately if
   you want.
 - Docker's own disk image (`Docker.raw`) doesn't shrink on the spot after a prune. Docker Desktop
-  reclaims the space over time.
+  reclaims the space over time. On Windows the VHDX needs `docker compact` (9c).

@@ -1,10 +1,10 @@
 {
   "name": "reclaim",
-  "version": "0.3.0",
-  "description": "Free disk space on your Mac: removes old git worktrees and ones whose PR merged (backing up uncommitted work first), revives a Docker Desktop hung after a full disk, and prunes old Docker images, build cache and stale containers. Asks before every removal; never touches Docker volumes. Claude Code only, macOS.",
+  "version": "0.4.0",
+  "description": "Free disk space on your Mac or Windows PC: removes old git worktrees and ones whose PR merged (backing up uncommitted work first), revives a Docker Desktop hung after a full disk, and prunes old Docker images, build cache and stale containers. Asks before every removal; never touches Docker volumes. Claude Code only, macOS and Windows.",
   "author": { "name": "mustafarslan" },
   "homepage": "https://github.com/mustafarslan/skills",
   "repository": "https://github.com/mustafarslan/skills",
   "license": "MIT",
-  "keywords": ["disk", "worktrees", "docker", "cleanup", "macos", "claude-code"]
+  "keywords": ["disk", "worktrees", "docker", "cleanup", "macos", "windows", "claude-code"]
 }
