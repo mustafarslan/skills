@@ -270,4 +270,12 @@ Live run on Windows (2026-11-27), one throwaway session in a scratch folder, `--
 - `park shutdown`: stopped, tab closed, `park show` says stopped;
 - `park resume`: a tab in the `park` window, the same session id (one transcript), the prompt arrived whole,
   and the session restarted its Monitor.
-- **Still open:** a full park on Windows (every session) needs the owner's go.
+
+Full park on Windows (2026-11-27, the owner's go), park 1: every session on the PC, 7 interactive ones in one
+repo, each in its own Windows Terminal tab, 4 of them busy when planned, the calling session among them:
+- `park shutdown` stopped all 7 (`stopped` = 1 for each), the calling session last, and closed their tabs;
+  Windows Terminal stayed open; the coordinator log stayed empty (no errors);
+- `park resume --park 1` brought all 7 back about 7 minutes later, each as a tab in the `park` window, each
+  with the same session id, its whole history and its transcript still being written;
+- one cron (the PM session's 6-hour check) was in the snapshot to restart;
+- the resumed calling session found its folder as parked (branch, head, 1 changed file, 7 unpushed commits).
