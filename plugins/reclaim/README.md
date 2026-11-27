@@ -87,6 +87,25 @@ drive. reclaim shows the file's size next to what Docker says it holds:
   your other distros, before `wsl --shutdown`. It never runs while Docker is starting or a build runs.
   Until it has run live once on a Windows PC, reclaim only reports the size there.
 
+## Developer caches
+
+`/reclaim` also offers the caches your tools keep, each with its size and how it clears, and clears only the
+ones you pick:
+
+| Cache | Clears |
+|---|---|
+| npm, yarn, pip, Go build cache, NuGet | all, with the tool's own command (`npm cache clean --force`, `yarn cache clean`, `pip cache purge`, `go clean -cache`, `dotnet nuget locals all --clear`) |
+| pnpm store, uv | by age, with the tool's own prune (`pnpm store prune`, `uv cache prune`) |
+| Cargo downloads | all (`registry/cache`, `registry/src`, `git/checkouts`; the index stays) |
+| Gradle, Maven | by age: whole versions untouched for `cache_days` days (30 by default) |
+| Xcode DerivedData, unavailable simulators (macOS) | all |
+| Folders you list in `cache_dirs` | by age: entries untouched for `cache_days` days |
+
+Each is looked for where that tool keeps it on your system (or where its own variable, such as `GOCACHE` or
+`CARGO_HOME`, points). A cache is skipped while its tool runs, because an agent may be building with it. Without
+the tool installed, an `all` cache's folder contents are deleted, never the folder itself, and links inside are
+removed as links, never followed. Set `config set cache_dirs '["~/my-cache"]'` and `config set cache_days 14`.
+
 ## Which repos it cleans
 
 You can list repos one by one, or give whole folders. Both work together.

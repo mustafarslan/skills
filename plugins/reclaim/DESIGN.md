@@ -305,6 +305,24 @@ macOS, `GetCompressedFileSizeW` on Windows), next to the sum of `docker system d
   in its help), but it targets a distro's own disk, and Docker's data disk is a separate VHDX. It has not been
   tried on one, so reclaim doesn't offer it.
 
+## 9d. Developer caches (0.4.0, `scripts/caches.py`)
+
+`caches scan` lists each known cache that exists here: its folders, its size, how it clears and, when a
+process of its tool runs, `busy`. `caches clear ID...` re-reads the process table and skips a busy cache.
+
+- **Where**: each tool's own default for the system (`%LOCALAPPDATA%` on Windows, `~/Library/Caches` on macOS,
+  `~/.cache` elsewhere), or its variable (`GOCACHE`, `CARGO_HOME`, `GRADLE_USER_HOME`, `UV_CACHE_DIR`,
+  `NUGET_PACKAGES`). A missing folder is skipped silently.
+- **All**: the tool's own command when it is installed, else the folder's contents through the shared delete
+  routine (links removed as links, the folder itself kept).
+- **By age**: the tool's own prune (pnpm, uv), else whole entries whose newest file and folder time is older
+  than `cache_days`: a Maven version folder (it holds a `.pom`), a Gradle `files-2.1/group/module/version`,
+  a build-cache file, or a child of a folder in `cache_dirs`.
+- **Busy**: a process whose program, or one of the first four words of its command line (so `node npm-cli.js`
+  counts as npm and `node server.js` doesn't), is the tool's; for Gradle and Maven, the daemon's class name
+  anywhere in the command line.
+- Left out: `%TEMP%`, which is noisy and often locked.
+
 ## 10. Extension point: paused sessions
 
 `worktrees.parked_folders()` returns `None` in this version, so the check is skipped and the scan reports

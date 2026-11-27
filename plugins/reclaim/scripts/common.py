@@ -28,6 +28,8 @@ DEFAULTS = {
     'keep_containers': [],
     'warn_gb': 15,
     'hook': True,
+    'cache_days': 30,
+    'cache_dirs': [],
 }
 
 
@@ -98,6 +100,8 @@ VALIDATORS = {
     'keep_containers': lambda v: isinstance(v, list) and all(isinstance(x, str) for x in v),
     'warn_gb': lambda v: _is_num(v) and v >= 0,
     'hook': lambda v: isinstance(v, bool),
+    'cache_days': lambda v: _is_num(v) and v >= 0,
+    'cache_dirs': lambda v: isinstance(v, list) and all(isinstance(x, str) for x in v),
 }
 
 

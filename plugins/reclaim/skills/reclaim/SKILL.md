@@ -1,6 +1,6 @@
 ---
 name: reclaim
-description: Free disk space on this computer (macOS or Windows) - remove old git worktrees and ones whose PR merged (backing up uncommitted work first), bring back a Docker Desktop that hung after the disk filled, prune old Docker images, build cache and stale containers, and show (on Windows, shrink) Docker's disk file. Use when the user says "/reclaim", "free up space", "disk is full", "clean old worktrees", "delete old docker images", "Docker won't start, no space left on device", or when the reclaim low-disk warning appears. Flags --days N, --dry-run, --no-merged, --worktrees-only, --docker-only.
+description: Free disk space on this computer (macOS or Windows) - remove old git worktrees and ones whose PR merged (backing up uncommitted work first), bring back a Docker Desktop that hung after the disk filled, prune old Docker images, build cache and stale containers, show (on Windows, shrink) Docker's disk file, and clear developer caches (npm, pnpm, yarn, pip, uv, NuGet, Cargo, Gradle, Maven, Go, Xcode). Use when the user says "/reclaim", "free up space", "disk is full", "clean old worktrees", "delete old docker images", "Docker won't start, no space left on device", or when the reclaim low-disk warning appears. Flags --days N, --dry-run, --no-merged, --worktrees-only, --docker-only.
 allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/reclaim *), AskUserQuestion
 ---
 
@@ -19,7 +19,7 @@ Running `git worktree remove`, `rm -rf`, `docker rm` or `docker volume` yourself
 2. Run `R df` and remember `free_gb` as **before**.
 
 Flags: `--days N` overrides the configured age. `--no-merged` removes by age only.
-`--worktrees-only` and `--docker-only` skip the other half. `--dry-run` runs every read step,
+`--worktrees-only` and `--docker-only` run only that section. `--dry-run` runs every read step,
 shows every table, and asks nothing and removes nothing.
 
 ## 1. Worktrees
@@ -81,12 +81,26 @@ shows every table, and asks nothing and removes nothing.
 Volumes are never removed by reclaim. If the user asks for that, show `docker system df -v` volume
 sizes and let them run `docker volume rm` themselves, after they confirm which ones.
 
-## 3. Report
+## 3. Developer caches
+
+1. Run `R caches scan`. Each row has a `label`, a `size`, `how` it clears, `clears_with` (the command or the
+   deletion it uses) and, when the cache's tool is running, `busy`:
+   - `all`: the whole cache goes; the next build downloads what it needs again.
+   - `by age`: only what hasn't changed for `days` days (the tool's own prune, or whole old entries).
+2. Show one table of the caches over 100 MB, largest first: label, size, how. A `busy` cache gets
+   "in use by X: skipped" and is not offered.
+3. One AskUserQuestion, multiSelect, each offered cache as an option "<label> · X GB · all / by age", none
+   chosen in advance. On macOS, Xcode's DerivedData and unavailable simulators are offered the same way,
+   only on a yes.
+4. Run `R caches clear ID...` with the chosen ids. Report each `cleared` / `partly` / `skipped` / `failed`
+   with its `freed` size. A `skipped` cache's tool started since the scan: leave it.
+
+## 4. Report
 
 Run `R df`. One short summary:
 
 - free space **before → after**;
-- what was removed (worktrees, image space, build cache, containers);
+- what was removed (worktrees, image space, build cache, containers, developer caches);
 - the backup folder, if any backups were made. Each backup's `INFO.txt` holds its restore steps.
 
 Then one line on what was kept and why, for the largest kept groups only.
