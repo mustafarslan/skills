@@ -206,6 +206,7 @@ class TestVerdicts(Base):
         self.assertIn('newer than the cutoff', row['reasons'])
 
     def test_main_checkout_is_kept(self):
+        self.worktree('side')  # a repo with only its main checkout is not scanned at all
         self.assertEqual(self.scan()[str(self.repo)]['verdict'], 'keep')
 
     def test_unreachable_detached_head_is_kept(self):

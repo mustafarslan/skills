@@ -14,7 +14,12 @@ never in a repo.
 
 1. Run `R config show`. If `configured` is true, list the current values in one line each and say this
    run changes only what they pick.
-2. **Repos.** Run `R config detect`. One AskUserQuestion, multiSelect: "Which repos should reclaim clean
+2. **Repos.** First ask one AskUserQuestion: "Clean every repo in whole folders, or pick repos one by one?".
+   For whole folders, run `R config detect-roots`, offer up to 4 folders as "`<folder>` · `<n>` repos"
+   (multiSelect, Other: they type a path, such as one on an external disk), and save with
+   `R config set roots '["/folder/a","/folder/b"]'`. Then run `R config preview` and tell them how many repos
+   it found and any warning. Whole folders cover repos cloned later too, so skip the rest of this step.
+   For one by one, run `R config detect`. One AskUserQuestion, multiSelect: "Which repos should reclaim clean
    worktrees for?" Offer up to 4, the most worktrees first, as "`<path>` · `<n>` worktrees". Other: they
    type a path. Save with `R config set repos '["/path/a","/path/b"]'`.
 3. **Age and backups.** One AskUserQuestion with two questions:

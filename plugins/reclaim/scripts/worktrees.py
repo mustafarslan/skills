@@ -34,6 +34,63 @@ def list_worktrees(repo):
     return [(p, i == 0) for i, p in enumerate(paths)]  # the first checkout is kept as "main"
 
 
+def _is_bare_repo(d):
+    return all(os.path.exists(os.path.join(d, n)) for n in ('HEAD', 'objects', 'refs'))
+
+
+def find_repos(roots, depth=2, max_dirs=2000):
+    """Git repos found by walking each root folder: ([repo paths], [warnings]).
+
+    A repo is a folder holding a .git folder, or a bare repo. A .git FILE is a linked worktree: those are
+    listed through their main repo, never as repos of their own. The walk never follows symlinks, never
+    leaves the root's disk, skips dot folders and build folders, and stops after max_dirs folders per root.
+    """
+    found, seen, warnings = [], set(), []
+
+    def add(d):
+        try:
+            st = os.stat(d)
+        except OSError:
+            return
+        if (st.st_dev, st.st_ino) not in seen:  # symlinks and case-insensitive disks give the same folder twice
+            seen.add((st.st_dev, st.st_ino))
+            found.append(os.path.realpath(d))
+
+    for root in roots:
+        root = os.path.expanduser(root)
+        if not os.path.isdir(root):
+            warnings.append(f'folder {root} is missing (unplugged disk?): skipped')
+            continue
+        dev = os.stat(root).st_dev
+        visited = 0
+        stack = [(root, 0)]
+        while stack:
+            d, level = stack.pop()
+            visited += 1
+            if visited > max_dirs:
+                warnings.append(f'folder {root} has more than {max_dirs} folders within {depth} levels: '
+                                f'stopped early; list the repos directly or use a narrower folder')
+                break
+            if os.path.isdir(os.path.join(d, '.git')) or _is_bare_repo(d):
+                add(d)
+                continue  # never look inside a repo
+            if level >= depth:
+                continue
+            try:
+                entries = sorted(os.scandir(d), key=lambda e: e.name)
+            except OSError:
+                continue
+            for e in entries:
+                if e.name.startswith('.') or e.name in BUILD_DIRS:
+                    continue
+                try:
+                    if e.is_dir(follow_symlinks=False) and os.stat(e.path).st_dev == dev:
+                        stack.append((e.path, level + 1))
+                except OSError:
+                    continue
+    return found, warnings
+
+
 def status_entries(path):
     """[(xy, path)] for tracked changes and untracked files, or None when git fails.
 
@@ -338,9 +395,10 @@ def fingerprint(path, head, status, ignored):
 def inspect(path, is_main, cutoff, cwds, parked, with_prs=True, current=None):
     row = {'path': path, 'main': is_main}
     if not os.path.isdir(path):
-        if not os.path.isdir(os.path.dirname(path.rstrip('/'))):
-            # The parent is gone too: more likely an unplugged disk than a deleted worktree.
-            row.update(verdict='keep', reasons=['folder and its parent are missing (unplugged disk?)'])
+        parent = os.path.dirname(path.rstrip('/'))
+        if not os.path.isdir(parent) or not os.listdir(parent):
+            # The parent is gone, or an empty mount point: more likely an unplugged disk than a deleted worktree.
+            row.update(verdict='keep', reasons=['folder and its parent are missing or empty (unplugged disk?)'])
         else:
             row.update(verdict='prune', reasons=['folder is gone'])
         return row
@@ -429,20 +487,23 @@ def inspect(path, is_main, cutoff, cwds, parked, with_prs=True, current=None):
     return row
 
 
-def scan(repos, days, merged=True, current=None, with_size=True):
+def scan(repos, days, merged=True, current=None, with_size=True, warnings=None):
     cutoff = now() - days * 86400
     cwds = process_cwds()
     parked = parked_folders()
     current = os.path.realpath(current or os.getcwd())
     gh_ok, gh_why = gh_status(repos)
-    warnings = []
+    warnings = list(warnings or [])
     if gh_ok is None:
         warnings.append(f'PRs were not checked ({gh_why}): the verdicts use age and unpushed commits only')
     if cwds is None:
         warnings.append('running processes could not be listed (no lsof or /proc): every worktree is kept')
     trees = []
     for repo in repos:
-        for path, is_main in list_worktrees(repo):
+        listed = list_worktrees(repo)
+        if len(listed) == 1 and listed[0][1] and os.path.isdir(listed[0][0]):
+            continue  # only the main checkout: nothing to clean, and it is never removed
+        for path, is_main in listed:
             trees.append((repo, path, is_main))
 
     def one(item):

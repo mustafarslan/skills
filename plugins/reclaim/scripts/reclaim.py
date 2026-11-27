@@ -8,7 +8,7 @@
   docker restart-hung                 kill a Docker Desktop hung after a full disk, relaunch it
   docker prune [--days N]             unused images + build cache older than N days
   docker rm NAME...                   remove stale containers (never volumes), then their images
-  config show | set KEY VALUE | detect
+  config show | set KEY VALUE | detect | detect-roots | preview
 """
 import argparse
 import json
@@ -57,6 +57,32 @@ def detect_repos(limit=300):
     return [{'repo': r, 'worktrees': n} for r, n in sorted(repos.items(), key=lambda x: -x[1])]
 
 
+def detect_roots(repos):
+    """Folders that hold the detected repos, most repos first: the candidates for 'scan whole folders'."""
+    counts = {}
+    for r in repos:
+        parent = os.path.dirname(r['repo'].rstrip('/'))
+        counts[parent] = counts.get(parent, 0) + 1
+    return [{'root': p, 'repos': n} for p, n in sorted(counts.items(), key=lambda x: (-x[1], x[0]))]
+
+
+def resolve_repos(repos, roots):
+    """Configured repos plus the repos found under the root folders, each once: (paths, warnings)."""
+    found, warns = worktrees.find_repos(roots) if roots else ([], [])
+    out, seen = [], set()
+    for r in list(repos) + found:
+        r = os.path.expanduser(r)
+        try:
+            st = os.stat(r)
+            key = (st.st_dev, st.st_ino)
+        except OSError:
+            key = r  # a configured repo that is missing stays listed so the scan can say so
+        if key not in seen:
+            seen.add(key)
+            out.append(r)
+    return out, warns
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog='reclaim')
     sub = ap.add_subparsers(dest='cmd', required=True)
@@ -76,7 +102,7 @@ def main(argv=None):
     d.add_argument('--prune-images', action='store_true',
                    help='with rm: also prune old unused images afterwards (only after the user approved it)')
     c = sub.add_parser('config')
-    c.add_argument('action', choices=['show', 'set', 'detect'])
+    c.add_argument('action', choices=['show', 'set', 'detect', 'detect-roots', 'preview'])
     c.add_argument('key', nargs='?')
     c.add_argument('value', nargs='?')
     a = ap.parse_args(argv)
@@ -87,11 +113,11 @@ def main(argv=None):
     if a.cmd == 'df':
         emit({'free_gb': gb(free_bytes('/'))})
     elif a.cmd == 'scan':
-        repos = a.repo or cfg['repos']
+        repos, warns = resolve_repos(a.repo or cfg['repos'], [] if a.repo else cfg['roots'])
         if not repos:
-            emit({'error': 'no repos configured: run /reclaim:init'})
+            emit({'error': 'no repos configured: run /reclaim:init', 'warnings': warns})
             return 2
-        emit(worktrees.scan(repos, days, merged=not a.no_merged))
+        emit(worktrees.scan(repos, days, merged=not a.no_merged, warnings=warns))
     elif a.cmd == 'remove':
         emit(worktrees.remove(a.paths, cfg['backup_dir'], backup_mod.backup))
     elif a.cmd == 'backup':
@@ -114,8 +140,13 @@ def main(argv=None):
             emit(cfg)
         elif a.action == 'detect':
             emit(detect_repos())
+        elif a.action == 'detect-roots':
+            emit(detect_roots(detect_repos()))
+        elif a.action == 'preview':
+            repos, warns = resolve_repos(cfg['repos'], cfg['roots'])
+            emit({'repos': repos, 'warnings': warns})
         elif a.action == 'set':
-            if a.key not in ('repos', 'backup_dir', 'days', 'keep_containers', 'warn_gb', 'hook'):
+            if a.key not in VALIDATORS:
                 emit({'error': f'unknown key {a.key}'})
                 return 2
             if a.value is None:

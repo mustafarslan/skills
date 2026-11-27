@@ -363,6 +363,18 @@ Found by an adversarial review and checked against the code before each fix. Eac
 Deliberately not done: skipping `gh` for `--no-merged` (it would hide open PRs, which are a keep reason), and
 choosing the disk to check from the repos' volume (it checks `/`).
 
+## 14c. Changes in 0.3.0
+
+- **`roots`**: folders of repos, scanned two levels deep on every run (`find_repos`), so users with several
+  repo folders, or an external disk, can say "all my repos" without listing each one. Configured `repos` and
+  found repos are de-duplicated by (device, inode). `config detect-roots` suggests parent folders and
+  `config preview` shows the repos a scan would use.
+- A repo with only its main checkout is not scanned: nothing to clean, and it kept the scan slow with 50+ repos.
+- A missing worktree whose parent folder is empty (an unmounted mount point) is kept, not pruned.
+- Suggested by a second-model review (agy, Neon Medium); each point was checked against the code first.
+- Not done: a per-root exclude list and a repo-count cap (the folder cap and warning are enough), and checking
+  the disk that holds the repos instead of `/` (`df` still reads `/`).
+
 ## 15. Known limits
 
 - It is macOS only: the Docker paths and `open -a`. The worktree half works on Linux, but it is untested

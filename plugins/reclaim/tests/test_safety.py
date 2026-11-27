@@ -279,3 +279,99 @@ class TestHookDataFolder(Base):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TestRoots(Base):
+    """`roots`: whole folders of repos, so users with several folders (or an external disk) need not list repos."""
+
+    def make_repo(self, parent, name):
+        d = Path(parent) / name
+        d.mkdir(parents=True)
+        sh('git', 'init', '-q', cwd=d)
+        return d
+
+    def test_finds_repos_in_two_roots_and_skips_worktrees_and_build_folders(self):
+        a, b = self.tmp / 'Projects', self.tmp / 'ssd' / 'projects'
+        r1, r2 = self.make_repo(a, 'one'), self.make_repo(b, 'two')
+        self.make_repo(a / 'group', 'nested')
+        (a / 'node_modules' / 'pkg').mkdir(parents=True)
+        self.make_repo(a / 'node_modules', 'trap')
+        (a / 'linked').mkdir()
+        (a / 'linked' / '.git').write_text('gitdir: /elsewhere/.git/worktrees/linked\n')  # a worktree
+        found, warns = worktrees.find_repos([str(a), str(b)])
+        names = sorted(os.path.basename(p) for p in found)
+        self.assertEqual(names, ['nested', 'one', 'two'])
+        self.assertEqual(warns, [])
+
+    def test_does_not_look_inside_a_repo_or_deeper_than_two_levels(self):
+        a = self.tmp / 'Projects'
+        outer = self.make_repo(a, 'outer')
+        self.make_repo(outer / 'vendor', 'inner')
+        self.make_repo(a / 'x' / 'y', 'toodeep')
+        found, _ = worktrees.find_repos([str(a)])
+        self.assertEqual([os.path.basename(p) for p in found], ['outer'])
+
+    def test_missing_root_is_a_warning_not_an_error(self):
+        found, warns = worktrees.find_repos([str(self.tmp / 'unplugged')])
+        self.assertEqual(found, [])
+        self.assertIn('missing', warns[0])
+
+    def test_symlinked_root_gives_each_repo_once(self):
+        a = self.tmp / 'Projects'
+        self.make_repo(a, 'one')
+        (self.tmp / 'alias').symlink_to(a)
+        found, _ = worktrees.find_repos([str(a), str(self.tmp / 'alias')])
+        self.assertEqual(len(found), 1)
+
+    def test_bare_repo_is_found(self):
+        a = self.tmp / 'Projects'
+        a.mkdir()
+        sh('git', 'init', '-q', '--bare', str(a / 'b.git'))
+        found, _ = worktrees.find_repos([str(a)])
+        self.assertEqual([os.path.basename(p) for p in found], ['b.git'])
+
+    def test_walk_stops_at_the_folder_cap_with_a_warning(self):
+        a = self.tmp / 'Projects'
+        for i in range(12):
+            (a / f'd{i}').mkdir(parents=True)
+        _, warns = worktrees.find_repos([str(a)], max_dirs=5)
+        self.assertTrue(any('stopped early' in w for w in warns))
+
+    def test_resolve_repos_merges_and_dedupes_configured_repos_and_roots(self):
+        a = self.tmp / 'Projects'
+        r = self.make_repo(a, 'one')
+        repos, _ = cli.resolve_repos([str(r)], [str(a)])
+        self.assertEqual(len(repos), 1)
+
+    def test_scan_uses_roots_and_never_needs_a_repos_list(self):
+        data = self.tmp / 'data'
+        data.mkdir(exist_ok=True)
+        (data / 'config.json').write_text(json.dumps({'roots': [str(self.repo.parent)]}))
+        seen = {}
+        real = worktrees.scan
+
+        def stub(repos, days, **kw):
+            seen['repos'] = repos
+            seen['warnings'] = kw.get('warnings')
+            return {'rows': []}
+        worktrees.scan = stub
+        self.addCleanup(setattr, worktrees, 'scan', real)
+        self.assertEqual(cli.main(['scan']), 0)
+        self.assertIn(os.path.realpath(self.repo), [os.path.realpath(p) for p in seen['repos']])
+
+    def test_config_set_roots_validates_and_detect_roots_groups_by_parent(self):
+        self.assertEqual(cli.main(['config', 'set', 'roots', '"nope"']), 2)
+        self.assertEqual(cli.main(['config', 'set', 'roots', '["/a","/b"]']), 0)
+        got = cli.detect_roots([{'repo': '/p/a', 'worktrees': 2}, {'repo': '/p/b', 'worktrees': 1},
+                                {'repo': '/q/c', 'worktrees': 1}])
+        self.assertEqual(got, [{'root': '/p', 'repos': 2}, {'root': '/q', 'repos': 1}])
+
+    def test_worktree_in_an_empty_mount_point_is_kept_not_pruned(self):
+        p = self.worktree('onmount')
+        mount = self.tmp / 'mnt'
+        mount.mkdir()
+        gone = mount / 'wt'  # the disk is not mounted: the mount point is empty
+        row = worktrees.inspect(str(gone), False, 0, [], None)
+        self.assertEqual(row['verdict'], 'keep')
+        self.assertIn('unplugged', row['reasons'][0])
+        self.assertTrue(os.path.isdir(p))
