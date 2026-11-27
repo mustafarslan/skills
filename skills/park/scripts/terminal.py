@@ -1,7 +1,9 @@
-"""Apple Terminal through osascript (Automation permission only, never Accessibility)."""
+"""Apple Terminal through osascript (Automation permission only, never Accessibility); on Windows, Windows
+Terminal through winterm.py."""
 import os
 import shutil
 import subprocess
+import sys
 
 
 def _q(s):
@@ -75,3 +77,11 @@ def notify(msg):
                          start_new_session=True)
         return
     osa(f'display notification {_q(msg)} with title "park"')
+
+
+# Windows: Windows Terminal tabs in place of Terminal.app windows (winterm.py). Terminal is never quit there:
+# only the parked sessions' own tabs close, which is what quit_terminal "all" means on Windows.
+CAN_QUIT = True
+if sys.platform == "win32":
+    from winterm import can_control, close_tabs as close_windows, notify, open_tab  # noqa: E402,F401,F811
+    CAN_QUIT = False
