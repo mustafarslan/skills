@@ -73,6 +73,18 @@ cp -r skills/skills/<skill-name> ~/.claude/skills/   # or .claude/skills/ for on
 cp skills/agents/*.md ~/.claude/agents/              # agents used by cure, pr-upsert, spm and system-design
 ```
 
+## Updates
+
+Claude Code leaves background auto-update off for third-party marketplaces, so new versions of the plugins would go
+unnoticed. Turn it on once: `/plugin` → **Marketplaces** → `mustafarslan-skills` → enable auto-update. Or update by
+hand: `claude plugin marketplace update mustafarslan-skills && claude plugin update <plugin>@mustafarslan-skills`,
+then restart.
+
+Each plugin under `plugins/` (`pr-pulse`, `reclaim`, `power-saver`) also checks for a newer version at session start and
+shows you one line when there is one. It makes one request to `raw.githubusercontent.com` a day, installs nothing, and
+says nothing when offline. Opt out with `MUSTAFARSLAN_SKILLS_UPDATE_CHECK=0`. (The bundled `skills` plugin has no
+hooks and no version of its own, so it has no notice; update it the same way.) Test it with `sh tests/run.test.sh`.
+
 ## Usage
 
 Invoke with a slash command, or just ask ("review PR 42", "address the comments on my PR") and Claude loads the skill. `bugfix` is the exception: slash command only.

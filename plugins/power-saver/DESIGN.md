@@ -13,7 +13,8 @@ This document says why each lever is in or out, how the parts fit, and what is s
 ```
 skills/power-saver/SKILL.md   /power-saver on|off|status [--keep-screen]
 skills/setup/SKILL.md         /power-saver:setup [--uninstall]
-hooks/hooks.json              SessionStart -> scripts/mode-line.sh (one line while on)
+hooks/hooks.json              SessionStart -> scripts/mode-line.sh (one line while on), scripts/update-check
+                              (one line when a newer version is published; once a day, installs nothing)
 scripts/power-saver           sh launcher: the first of python3, python, py -3 that is 3.9+
 scripts/power_saver.py        detect, on, off, status, mode-line, setup (never needs admin itself)
 scripts/winpower.py           powercfg parsing (by GUID, indentation and hex, so any display language works) and
