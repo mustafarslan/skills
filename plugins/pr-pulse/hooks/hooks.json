@@ -54,6 +54,11 @@
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/ensure-deps.sh",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}\"/scripts/update-check",
+            "timeout": 10
           }
         ]
       }

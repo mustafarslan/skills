@@ -3,7 +3,8 @@
   "hooks": {
     "SessionStart": [
       { "hooks": [
-        { "type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}\"/scripts/low-disk.sh", "timeout": 10 }
+        { "type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}\"/scripts/low-disk.sh", "timeout": 10 },
+        { "type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}\"/scripts/update-check", "timeout": 10 }
       ] }
     ]
   }
