@@ -1,0 +1,15 @@
+#!/bin/sh
+# SessionStart hook launcher: says when a newer version of this plugin is out. See update_check.py.
+# Always exits 0 and stays silent when anything is missing. On Windows `python3` may be missing or the
+# Microsoft Store's stub, so the first Python that actually runs is used.
+here=$(dirname "$0")
+for py in python3 python; do
+  if "$py" -c "import sys; sys.exit(sys.version_info < (3, 6))" >/dev/null 2>&1; then
+    "$py" "$here/update_check.py" 2>/dev/null
+    exit 0
+  fi
+done
+if py -3 -c "import sys; sys.exit(sys.version_info < (3, 6))" >/dev/null 2>&1; then
+  py -3 "$here/update_check.py" 2>/dev/null
+fi
+exit 0

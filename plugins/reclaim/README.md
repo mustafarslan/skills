@@ -15,6 +15,19 @@ claude plugin install reclaim@mustafarslan-skills
 
 Then run `/reload-plugins` and `/reclaim:init`.
 
+## Update notice
+
+Claude Code leaves background auto-update **off** for third-party marketplaces such as this one, so a new version
+would otherwise go unnoticed. To get updates automatically, turn it on once: `/plugin` → **Marketplaces** →
+`mustafarslan-skills` → enable auto-update. Or update by hand:
+`claude plugin marketplace update mustafarslan-skills && claude plugin update reclaim@mustafarslan-skills`, then restart.
+
+If you leave auto-update off, reclaim tells you when a newer version is out: at session start, at most once a day,
+it reads this plugin's `plugin.json` from GitHub (one `raw.githubusercontent.com` request, 3-second timeout) and shows
+one line to you only when that version is newer than the one you have. It installs nothing, sends nothing about you,
+and says nothing when it is offline or anything goes wrong. To switch it off, set `MUSTAFARSLAN_SKILLS_UPDATE_CHECK=0`
+in your environment (for example in the `env` block of `~/.claude/settings.json`).
+
 ## What you need, and what happens without it
 
 Only `git` and Python 3.9+ (`python3`, `python` or `py`) are required. Everything else is optional, and a missing piece makes reclaim more

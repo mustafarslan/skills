@@ -391,6 +391,9 @@ nothing when any of these hold:
 Otherwise it prints hook JSON: `systemMessage`, which the user sees, and
 `hookSpecificOutput.additionalContext`, so Claude can offer `/reclaim`.
 
+A second SessionStart hook, `scripts/update-check` (shared with the other plugins of this marketplace), prints a
+`systemMessage` when a newer reclaim is published; it checks once a day, installs nothing and is silent on any error.
+
 One jq pitfall: `.hook // true` returns `true` for `false`, because `//` treats `false` as missing. Use
 `if .hook == false then "off" else "on" end`.
 

@@ -86,6 +86,19 @@ version reaches nobody. Don't also set a version in `marketplace.json`.
 After an update that changes `guard.ps1`, run `/power-saver:setup` again: the task runs the admin-only copy that
 setup made, not the plugin's own file.
 
+## Update notice
+
+Claude Code leaves background auto-update **off** for third-party marketplaces such as this one, so a new version
+would otherwise go unnoticed. To get updates automatically, turn it on once: `/plugin` → **Marketplaces** →
+`mustafarslan-skills` → enable auto-update. Or update by hand:
+`claude plugin marketplace update mustafarslan-skills && claude plugin update power-saver@mustafarslan-skills`, then restart.
+
+If you leave auto-update off, power-saver tells you when a newer version is out: at session start, at most once a day,
+it reads this plugin's `plugin.json` from GitHub (one `raw.githubusercontent.com` request, 3-second timeout) and shows
+one line to you only when that version is newer than the one you have. It installs nothing, sends nothing about you,
+and says nothing when it is offline or anything goes wrong. To switch it off, set `MUSTAFARSLAN_SKILLS_UPDATE_CHECK=0`
+in your environment (for example in the `env` block of `~/.claude/settings.json`).
+
 ## Tests
 
 ```sh

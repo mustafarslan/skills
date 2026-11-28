@@ -1,6 +1,6 @@
 {
   "name": "pr-pulse",
-  "version": "0.12.1",
+  "version": "0.12.2",
   "description": "Runs your PR loop across all your Claude Code sessions and repos: announces PRs in Slack, runs /pr-review, /pr-feedback and /pr-merge, asks your decisions from notifications, and posts nothing without your top lines. Claude Code only, macOS.",
   "author": {
     "name": "pr-pulse"

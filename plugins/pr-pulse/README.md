@@ -351,6 +351,19 @@ Sessions opened before 0.7.7 don't have the hand-over yet: reload them once.
 From a checkout of this repo, entry points hand over to the installed service's copy; set `PR_PULSE_FORWARDED=1` to run the checkout's own code.
 
 
+## Update notice
+
+Claude Code leaves background auto-update **off** for third-party marketplaces such as this one, so a new version
+would otherwise go unnoticed. To get updates automatically, turn it on once: `/plugin` → **Marketplaces** →
+`mustafarslan-skills` → enable auto-update. Or update by hand:
+`claude plugin marketplace update mustafarslan-skills && claude plugin update pr-pulse@mustafarslan-skills`, then restart.
+
+If you leave auto-update off, pr-pulse tells you when a newer version is out: at session start, at most once a day,
+it reads this plugin's `plugin.json` from GitHub (one `raw.githubusercontent.com` request, 3-second timeout) and shows
+one line to you only when that version is newer than the one you have. It installs nothing, sends nothing about you,
+and says nothing when it is offline or anything goes wrong. To switch it off, set `MUSTAFARSLAN_SKILLS_UPDATE_CHECK=0`
+in your environment (for example in the `env` block of `~/.claude/settings.json`).
+
 ## Stop or remove it
 
 To stop: `/pr-pulse:stop` (or `pr-pulse stop`). To bring it back: `/pr-pulse:start`.

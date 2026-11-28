@@ -7,6 +7,7 @@ plugins/power-saver/scripts/power-saver text eol=lf
 # Windows PowerShell 5.1 scripts: CRLF on checkout, as Windows tools expect.
 plugins/power-saver/scripts/*.ps1 text eol=crlf
 plugins/reclaim/scripts/reclaim text eol=lf
+plugins/*/scripts/update-check text eol=lf
 plugins/reclaim/scripts/*.ps1 text eol=crlf
 # Captured command output, byte for byte (wsl.exe prints UTF-16).
 plugins/reclaim/tests/fixtures/** -text
